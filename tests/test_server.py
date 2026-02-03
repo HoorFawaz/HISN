@@ -19,15 +19,29 @@ from config import Settings, settings
 from dns_server.decision import DecisionEngine
 from dns_server.resolver import UpstreamResolver
 from dns_server.server import BLOCK_TTL, HisnResolver, build_servers
+from storage.db import Database
 
 BLOCK_PAGE_IP = "192.0.2.80"
 CLIENT_TIMEOUT = 2.0
 
 
 def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
+    """Return a port that is free for BOTH UDP and TCP (the server uses both).
+
+    On Windows a port can be free for UDP but reserved or blocked for TCP
+    (WinError 10013), so checking UDP alone makes the tests flaky there.
+    """
+    for _ in range(100):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            udp.bind(("127.0.0.1", 0))
+            port = int(udp.getsockname()[1])
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
+                    tcp.bind(("127.0.0.1", port))
+            except OSError:
+                continue  # taken or forbidden for TCP: pick another port
+            return port
+    raise RuntimeError("no port free for both UDP and TCP")
 
 
 class FakeUpstream(BaseResolver):
@@ -71,7 +85,14 @@ def upstream_port() -> Iterator[int]:
 
 
 @pytest.fixture
-def start_hisn(upstream_port: int) -> Iterator[Callable[..., int]]:
+def database() -> Iterator[Database]:
+    db = Database(":memory:")
+    yield db
+    db.close()
+
+
+@pytest.fixture
+def start_hisn(upstream_port: int, database: Database) -> Iterator[Callable[..., int]]:
     """Return a function that starts a HISN server and gives back its port."""
     started: list[DNSServer] = []
 
@@ -95,7 +116,7 @@ def start_hisn(upstream_port: int) -> Iterator[Callable[..., int]]:
         upstream = UpstreamResolver(
             str(config.upstream_dns), config.upstream_port, config.upstream_timeout
         )
-        resolver = HisnResolver(config, engine, upstream)
+        resolver = HisnResolver(config, engine, upstream, database)
         udp, tcp = build_servers(resolver, config.dns_host, config.dns_port)
         udp.start_thread()
         tcp.start_thread()
@@ -223,3 +244,36 @@ def test_oversized_udp_reply_is_truncated_for_the_client(start_hisn: Callable[..
     port = start_hisn()
     reply = _ask(port, "many.example.net")
     assert reply.header.tc == 1
+
+
+def test_decisions_are_logged_with_minimal_data(
+    start_hisn: Callable[..., int], database: Database
+) -> None:
+    port = start_hisn()
+    _ask(port, "absher-sa.com")  # blocked by the blacklist
+    _ask(port, "example.com")  # allowed by default
+    rows = {row.domain: row for row in database.recent_requests()}
+    assert rows["absher-sa.com"].verdict == "block"
+    assert rows["absher-sa.com"].reason == "blacklist"
+    assert rows["example.com"].verdict == "allow"
+    assert rows["example.com"].reason == "default"
+    assert rows["example.com"].device == "127.0.0.1"
+    assert [row.domain for row in database.top_blocked()] == ["absher-sa.com"]
+
+
+def test_invalid_and_refused_queries_are_not_logged(
+    start_hisn: Callable[..., int], database: Database
+) -> None:
+    port = start_hisn()
+    reply = _ask(port, "-bad-.example")
+    assert reply.header.rcode == RCODE.REFUSED
+    assert database.recent_requests() == []
+
+
+def test_storage_failure_does_not_break_dns_answers(
+    start_hisn: Callable[..., int], database: Database
+) -> None:
+    port = start_hisn()
+    database.close()  # every later log call raises sqlite3.ProgrammingError
+    reply = _ask(port, "example.com")
+    assert _addresses(reply) == ["192.0.2.1"]

@@ -7,7 +7,8 @@ Flow for each query:
 1. Drop it silently if the client is outside the allowed networks, so the
    server can never be abused as an open resolver.
 2. Validate and normalize the queried name. Invalid names get REFUSED.
-3. Ask the decision engine. Blocked names get the block page address,
+3. Ask the decision engine and log the decision (minimal data, see
+   ``storage/schema.sql``). Blocked names get the block page address,
    everything else is forwarded to the upstream DNS server.
 """
 
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import socket
+import sqlite3
 import struct
 import time
 
@@ -32,9 +34,11 @@ from dnslib import (
 from dnslib.server import BaseResolver, DNSHandler, DNSLogger, DNSServer
 
 from config import Settings, settings
-from dns_server.decision import DecisionEngine
+from dns_server.decision import Decision, DecisionEngine, Verdict
 from dns_server.domain import InvalidDomainError, name_from_labels, normalize_domain
 from dns_server.resolver import UpstreamError, UpstreamResolver
+from storage.cache import TTLCache
+from storage.db import Database
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,7 @@ BLOCK_TTL = 30  # seconds; short, so a wrongly blocked site recovers quickly
 TCP_CLIENT_TIMEOUT = 5.0  # seconds; stops idle TCP clients from pinning a thread
 DEFAULT_UDP_LIMIT = 512  # classic DNS limit when the client sent no EDNS size
 MAX_UDP_LIMIT = 1232  # conservative cap that avoids IP fragmentation
+PURGE_INTERVAL = 3600  # seconds between retention clean-ups
 
 
 class HisnResolver(BaseResolver):
@@ -52,10 +57,12 @@ class HisnResolver(BaseResolver):
         config: Settings,
         engine: DecisionEngine,
         upstream: UpstreamResolver,
+        database: Database | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
         self._upstream = upstream
+        self._database = database
 
     def resolve(self, request: DNSRecord, handler: DNSHandler) -> DNSRecord:
         client_ip = handler.client_address[0]
@@ -99,6 +106,8 @@ class HisnResolver(BaseResolver):
             decision.reason.value,
         )
 
+        self._log_decision(domain, decision, client_ip)
+
         if decision.blocked:
             return self._blocked_reply(request)
 
@@ -107,6 +116,17 @@ class HisnResolver(BaseResolver):
         except UpstreamError as exc:
             logger.warning("upstream failure for %s: %s", domain, exc)
             return _error_reply(request, RCODE.SERVFAIL)
+
+    def _log_decision(self, domain: str, decision: Decision, client_ip: str) -> None:
+        """Store the decision. A storage problem must never stop DNS answers."""
+        if self._database is None:
+            return
+        try:
+            self._database.log_decision(
+                domain, decision.verdict.value, decision.reason.value, client_ip
+            )
+        except sqlite3.Error as exc:
+            logger.warning("could not log decision for %s: %s", domain, exc)
 
     def _blocked_reply(self, request: DNSRecord) -> DNSRecord:
         """Answer with the block page address instead of the real one.
@@ -182,17 +202,31 @@ def build_servers(
     return udp, tcp
 
 
+def _purge_old_logs(database: Database) -> None:
+    """Apply the retention period (privacy: logs do not live forever)."""
+    try:
+        removed = database.purge_older_than(settings.log_retention_days)
+    except sqlite3.Error as exc:
+        logger.warning("log purge failed: %s", exc)
+        return
+    if removed:
+        logger.info("purged %d requests older than %d days", removed, settings.log_retention_days)
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    engine = DecisionEngine.from_files(settings.whitelist_path, settings.blacklist_path)
+    cache: TTLCache[Verdict] = TTLCache(settings.verdict_cache_ttl)
+    engine = DecisionEngine.from_files(settings.whitelist_path, settings.blacklist_path, cache)
     upstream = UpstreamResolver(
         str(settings.upstream_dns), settings.upstream_port, settings.upstream_timeout
     )
-    resolver = HisnResolver(settings, engine, upstream)
+    database = Database(settings.db_path)
+    _purge_old_logs(database)
+    resolver = HisnResolver(settings, engine, upstream, database)
     udp, tcp = build_servers(resolver, settings.dns_host, settings.dns_port)
 
     udp.start_thread()
@@ -207,7 +241,8 @@ def main() -> int:
 
     try:
         while True:
-            time.sleep(3600)
+            time.sleep(PURGE_INTERVAL)
+            _purge_old_logs(database)
     except KeyboardInterrupt:
         logger.info("shutting down")
     finally:
@@ -215,6 +250,7 @@ def main() -> int:
         tcp.server.shutdown()
         udp.server.server_close()
         tcp.server.server_close()
+        database.close()
     return 0
 
 

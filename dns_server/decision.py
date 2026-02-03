@@ -4,11 +4,12 @@ Order of checks (the first match wins):
 
 1. Whitelist: exact official domains, always allowed.
 2. Blacklist: reported malicious domains, always blocked.
-3. Default: allow.
+3. Verdict cache: a recent verdict for this exact domain, if any.
+4. Default: allow.
 
-Later phases insert the verdict cache and the ML model between step 2 and
-step 3 (see the project brief). The engine takes already-validated input, so
-callers must run :func:`dns_server.domain.normalize_domain` first.
+The ML model (a later phase) goes between step 3 and step 4 and stores its
+verdicts in the cache. The engine takes already-validated input, so callers
+must run :func:`dns_server.domain.normalize_domain` first.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from enum import Enum
 from pathlib import Path
 
 from dns_server.domain import InvalidDomainError, normalize_domain, parent_domains
+from storage.cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,7 @@ class Reason(str, Enum):
 
     WHITELIST = "whitelist"
     BLACKLIST = "blacklist"
+    CACHE = "cache"
     DEFAULT = "default"
 
 
@@ -76,19 +79,30 @@ def load_domain_list(path: Path) -> frozenset[str]:
 
 
 class DecisionEngine:
-    """Whitelist-then-blacklist decision logic. Immutable and thread-safe."""
+    """Whitelist, blacklist, then cache. Thread-safe (the lists never change)."""
 
-    def __init__(self, whitelist: frozenset[str], blacklist: frozenset[str]) -> None:
+    def __init__(
+        self,
+        whitelist: frozenset[str],
+        blacklist: frozenset[str],
+        cache: TTLCache[Verdict] | None = None,
+    ) -> None:
         self._whitelist = whitelist
         self._blacklist = blacklist
+        self._cache = cache
 
     @classmethod
-    def from_files(cls, whitelist_path: Path, blacklist_path: Path) -> DecisionEngine:
+    def from_files(
+        cls,
+        whitelist_path: Path,
+        blacklist_path: Path,
+        cache: TTLCache[Verdict] | None = None,
+    ) -> DecisionEngine:
         """Build an engine from the list files, failing loudly if one is bad."""
         whitelist = load_domain_list(whitelist_path)
         blacklist = load_domain_list(blacklist_path)
         logger.info("loaded %d whitelist and %d blacklist entries", len(whitelist), len(blacklist))
-        return cls(whitelist, blacklist)
+        return cls(whitelist, blacklist, cache)
 
     def decide(self, domain: str) -> Decision:
         """Return the decision for an already-normalized ``domain``."""
@@ -102,5 +116,12 @@ class DecisionEngine:
         for candidate in parent_domains(domain):
             if candidate in self._blacklist:
                 return Decision(Verdict.BLOCK, Reason.BLACKLIST, candidate)
+
+        # The cache comes after both lists, so editing a list always wins over
+        # a verdict that was cached earlier.
+        if self._cache is not None:
+            cached = self._cache.get(domain)
+            if cached is not None:
+                return Decision(cached, Reason.CACHE)
 
         return Decision(Verdict.ALLOW, Reason.DEFAULT)

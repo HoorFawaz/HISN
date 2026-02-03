@@ -18,6 +18,9 @@ data/raw/*
 *.db
 *.sqlite
 *.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
 *.log
 
 # Trained models are reproducible from train.py
