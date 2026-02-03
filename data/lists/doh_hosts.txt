@@ -1,0 +1,9 @@
+# Hostnames of well-known DNS-over-HTTPS servers. Phase 7 answers NXDOMAIN for these
+# so browsers fall back to the router's DNS. One hostname per line, lowercase.
+dns.google
+cloudflare-dns.com
+mozilla.cloudflare-dns.com
+dns.quad9.net
+doh.opendns.com
+dns.nextdns.io
+doh.cleanbrowsing.org

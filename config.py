@@ -1,0 +1,163 @@
+"""Central configuration for HISN.
+
+All tunable values live here. Nothing secret is hardcoded: values come from
+environment variables (optionally loaded from a local ``.env`` file that is
+never committed) and fall back to safe development defaults.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Union
+
+from dotenv import load_dotenv
+
+BASE_DIR: Path = Path(__file__).resolve().parent
+
+# Load .env if present. Real environment variables take precedence over it.
+load_dotenv(BASE_DIR / ".env", override=False)
+
+IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
+IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+
+_DEFAULT_ALLOWED_NETWORKS = "127.0.0.0/8,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
+
+
+class ConfigError(ValueError):
+    """Raised when a configuration value is missing or invalid."""
+
+
+def _env_str(name: str, default: str) -> str:
+    return os.environ.get(name, default).strip()
+
+
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    raw = _env_str(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
+    if not minimum <= value <= maximum:
+        raise ConfigError(f"{name} must be between {minimum} and {maximum}, got {value}")
+    return value
+
+
+def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    raw = _env_str(name, str(default))
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a number, got {raw!r}") from exc
+    if not minimum <= value <= maximum:
+        raise ConfigError(f"{name} must be between {minimum} and {maximum}, got {value}")
+    return value
+
+
+def _env_ip(name: str, default: str) -> IPAddress:
+    raw = _env_str(name, default)
+    try:
+        return ipaddress.ip_address(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be an IP address, got {raw!r}") from exc
+
+
+def _env_networks(name: str, default: str) -> tuple[IPNetwork, ...]:
+    """Parse a comma-separated list of CIDR networks."""
+    raw = _env_str(name, default)
+    networks: list[IPNetwork] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(part, strict=False))
+        except ValueError as exc:
+            raise ConfigError(f"{name} has an invalid network {part!r}") from exc
+    if not networks:
+        # An empty allow-list would silently turn the server into a brick (or,
+        # if misread elsewhere, an open resolver). Fail loudly instead.
+        raise ConfigError(f"{name} must contain at least one network")
+    return tuple(networks)
+
+
+def _env_path(name: str, default: str) -> Path:
+    """Resolve a path relative to the project root unless it is absolute."""
+    path = Path(_env_str(name, default))
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+@dataclass(frozen=True)
+class Settings:
+    """Immutable, validated runtime settings."""
+
+    # DNS server. Port 5353 is unprivileged; port 53 needs admin rights.
+    dns_host: str
+    dns_port: int
+    upstream_dns: IPAddress
+    upstream_port: int
+    upstream_timeout: float  # seconds; every upstream call must time out
+    allowed_networks: tuple[IPNetwork, ...]  # only these clients get answers
+    block_page_ip: IPAddress  # returned instead of the real IP for blocked domains
+
+    # Model decision threshold: probability above which a domain is blocked.
+    model_threshold: float
+
+    # Storage
+    db_path: Path
+    log_retention_days: int
+    verdict_cache_ttl: int  # seconds
+
+    # Dashboard / API
+    api_host: str
+    api_port: int
+    api_token: str  # empty means "not configured"; the API must refuse to start
+
+    # Static lists
+    whitelist_path: Path
+    blacklist_path: Path
+    brands_path: Path
+    doh_hosts_path: Path
+
+    def is_client_allowed(self, client_ip: str) -> bool:
+        """Return True if ``client_ip`` belongs to an allowed network.
+
+        Anything unparsable is rejected, so malformed input can never be
+        treated as a trusted client.
+        """
+        try:
+            address = ipaddress.ip_address(client_ip)
+        except ValueError:
+            return False
+        return any(address in network for network in self.allowed_networks)
+
+
+def load_settings() -> Settings:
+    """Build :class:`Settings` from the environment, validating every value."""
+    lists_dir = BASE_DIR / "data" / "lists"
+    return Settings(
+        dns_host=str(_env_ip("HISN_DNS_HOST", "127.0.0.1")),
+        dns_port=_env_int("HISN_DNS_PORT", 5353, minimum=1, maximum=65535),
+        upstream_dns=_env_ip("HISN_UPSTREAM_DNS", "1.1.1.1"),
+        upstream_port=_env_int("HISN_UPSTREAM_PORT", 53, minimum=1, maximum=65535),
+        upstream_timeout=_env_float("HISN_UPSTREAM_TIMEOUT", 2.0, minimum=0.1, maximum=10.0),
+        allowed_networks=_env_networks("HISN_ALLOWED_NETWORKS", _DEFAULT_ALLOWED_NETWORKS),
+        block_page_ip=_env_ip("HISN_BLOCK_PAGE_IP", "127.0.0.1"),
+        model_threshold=_env_float("HISN_MODEL_THRESHOLD", 0.80, minimum=0.0, maximum=1.0),
+        db_path=_env_path("HISN_DB_PATH", "data/hisn.db"),
+        log_retention_days=_env_int("HISN_LOG_RETENTION_DAYS", 30, minimum=1, maximum=365),
+        verdict_cache_ttl=_env_int("HISN_VERDICT_CACHE_TTL", 3600, minimum=1, maximum=86400),
+        # Default to localhost: the dashboard must never be exposed by accident.
+        api_host=str(_env_ip("HISN_API_HOST", "127.0.0.1")),
+        api_port=_env_int("HISN_API_PORT", 8080, minimum=1, maximum=65535),
+        api_token=_env_str("HISN_API_TOKEN", ""),
+        whitelist_path=lists_dir / "whitelist.txt",
+        blacklist_path=lists_dir / "blacklist.txt",
+        brands_path=lists_dir / "brands.txt",
+        doh_hosts_path=lists_dir / "doh_hosts.txt",
+    )
+
+
+settings: Settings = load_settings()

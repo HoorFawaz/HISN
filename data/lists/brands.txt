@@ -1,0 +1,8 @@
+# Main-label names of Saudi government and bank brands, used for similarity checks.
+# One lowercase label per line (no TLD). Lines starting with # are ignored.
+#
+# TODO: review and extend this list in Phase 3.
+absher
+nafath
+tawakkalna
+alrajhi

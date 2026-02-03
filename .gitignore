@@ -1,0 +1,42 @@
+# Secrets and local configuration (never commit)
+.env
+.env.*
+!.env.example
+
+# Certificates and keys (local CA for the HTTPS block page)
+certs/
+*.pem
+*.key
+*.crt
+*.csr
+
+# Raw datasets (large, third-party licenses)
+data/raw/*
+!data/raw/.gitkeep
+
+# Databases and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Trained models are reproducible from train.py
+ml/models/*.joblib
+ml/models/*.pkl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

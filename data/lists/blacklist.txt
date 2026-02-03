@@ -1,0 +1,8 @@
+# Domains reported as malicious. Always blocked (the whitelist is checked first).
+# One domain per line, lowercase, no scheme, no path. Lines starting with # are ignored.
+# Matching is by label boundary, so subdomains of a listed domain are blocked too.
+#
+# Phase 1 uses this file. From Phase 2 on, reported domains also live in SQLite.
+#
+# Demo entry from the project brief: a fake lookalike of the official Absher domain.
+absher-sa.com
