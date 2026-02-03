@@ -3,4 +3,4 @@
 # Matching is by label boundary: host == d or host.endswith("." + d).
 #
 # TODO: verify every entry against the organisation's official website before release.
-absher.gov.sa
+absher.sa

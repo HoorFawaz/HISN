@@ -30,14 +30,17 @@ python -m dns_server.server
 ```
 
 It listens on `127.0.0.1:5353` (UDP and TCP). Port 5353 needs no admin rights; port 53 is only for the real demo.
-Stop it with `Ctrl+C`. On Windows, if port 5353 is taken by another program, set `HISN_DNS_PORT=5354` in `.env`.
+Stop it with `Ctrl+C`. If another program already uses port 5353, set `HISN_DNS_PORT` to a free port in `.env`.
 
-Query it from a second terminal:
+Query it from a second terminal (works on every OS):
 
 ```bash
-nslookup -port=5353 absher-sa.com 127.0.0.1      # Windows (blocked: answers 127.0.0.1)
-dig @127.0.0.1 -p 5353 absher-sa.com             # Linux / macOS
+python -c "import sys; from dnslib import DNSRecord; print(DNSRecord.parse(DNSRecord.question(sys.argv[1]).send('127.0.0.1', 5353, timeout=5)))" absher-sa.com
 ```
+
+Replace the last word with any domain. A blocked domain answers `127.0.0.1` (the block page address).
+`nslookup -port=...` is not reliable on Windows (it may ignore the port), so use the command above.
+On Linux and macOS `dig @127.0.0.1 -p 5353 absher-sa.com` also works.
 
 Blocked domains get the block page address (`HISN_BLOCK_PAGE_IP`). Everything else is forwarded to the upstream DNS.
 Edit `data/lists/whitelist.txt` and `data/lists/blacklist.txt`, then restart the server.
