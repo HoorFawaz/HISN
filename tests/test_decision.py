@@ -111,5 +111,5 @@ def test_engine_loads_the_shipped_lists() -> None:
     from config import settings
 
     engine = DecisionEngine.from_files(settings.whitelist_path, settings.blacklist_path)
-    assert engine.decide("absher.gov.sa").verdict is Verdict.ALLOW
+    assert engine.decide("absher.sa").verdict is Verdict.ALLOW
     assert engine.decide("absher-sa.com").blocked
