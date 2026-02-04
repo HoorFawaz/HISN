@@ -259,3 +259,16 @@ def registered_domain(host: str) -> str:
     if not main:
         return suffix  # the host is itself a public suffix such as "co.uk"
     return f"{main}.{suffix}" if suffix else main
+
+
+def concentration_key(host: str) -> str:
+    """The name that "owns" a host, used to stop one owner from dominating a dataset.
+
+    For hosts on a shared platform (``x.github.io``, ``pub-1234.r2.dev``) the
+    key is the platform itself; for everything else it is the registered
+    domain. Many hosts under one key come from one owner or one service.
+    """
+    parts = _EXTRACT(host)
+    if parts.is_private and parts.suffix:
+        return parts.suffix
+    return registered_domain(host)

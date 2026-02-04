@@ -64,25 +64,48 @@ It stays empty until the ML model (a later phase) starts storing verdicts in it.
 ## Prepare the data (Phase 3)
 
 The model learns from public feeds. They are third-party data, so they stay in `data/raw/` and
-`data/processed/`, which git ignores. Save the files with these names (the script finds them by name):
+`data/processed/`, which git ignores.
 
-| File in `data/raw/` | What | Where from |
-|---|---|---|
-| `tranco.csv.zip` | benign names | `https://tranco-list.eu/top-1m-incl-subdomains.csv.zip` (permanent link; keeps subdomains, like real DNS traffic) |
-| `phishtank.csv.bz2` | phishing | PhishTank downloads (`online-valid.csv.bz2`). Automated downloads need a free application key. |
-| `urlhaus.csv` | malware URLs | URLhaus `recent.csv` export. It needs a free abuse.ch Auth-Key. |
+**1. Benign names (Tranco).** Download `https://tranco-list.eu/top-1m-incl-subdomains.csv.zip` (permanent link, no account)
+and save it as `data/raw/tranco.csv.zip`. The subdomain version matches real DNS traffic.
 
-One benign file and at least one malicious file are enough. Then run:
+**2. Phishing reports with dates (PhishStats).** Free, read access needs no account:
+
+```bash
+python -m ml.fetch_phishstats
+```
+
+Without a key the API allows 50 requests a day per IP; one request returns 100 reports, so a run gives about 4,500 reports
+(roughly two weeks of data). Run it again on another day: it continues further back in time from where it stopped, and saves
+only `id, url, first_seen, score`. A free key raises the limit; if you have one, set the environment variable
+`PHISHSTATS_API_KEY` (never put it in a file inside the project). The labels are automatic (a `score` from the site, no human review).
+
+Other sources work too if you save them in `data/raw/` with a name that starts with `phishtank` (PhishTank CSV) or pass
+them with `--malicious` (for example URLhaus, which is malware rather than phishing and mostly uses bare IP addresses).
+
+**3. Build the dataset:**
 
 ```bash
 python -m ml.prepare_data
 ```
 
-It writes `data/processed/dataset.csv` and prints a cleaning report. Things it does on purpose: drops IP-address hosts,
-duplicates and overlap between the two classes, samples the benign list at random (200,000 by default, `--benign-limit`),
-and splits by time: the **newest** malicious domains form the test set, and hosts of one registered domain never end up on both
-sides. Benign names have no date, so they are split at random with the same ratio. Read the "Dataset" lines in the output:
-if the two classes differ a lot on something unrelated to phishing, the model could learn the data source instead.
+It writes `data/processed/dataset.csv` and prints a cleaning report. On purpose it: skips reports with a score below 5
+(`--min-score`), drops IP-address hosts, duplicates and overlap between the two classes, keeps at most 50 hosts per owner or
+platform (`--max-per-key`, so one free-hosting service cannot become the whole malicious set), samples the benign list at random
+(200,000 by default, `--benign-limit`), and splits by time: the **newest** malicious domains form the test set, and hosts of one
+registered domain never end up on both sides. Benign names have no date, so they are split at random with the same ratio.
+Read the "Dataset" lines in the output: if the two classes differ a lot on something unrelated to phishing, the model could
+learn the data source instead.
+
+PhishStats leaves the `score` empty for most reports (about 80% in our downloads), and the few scored ones are mostly
+IP-address URLs, which a DNS filter never sees. Without `--keep-unscored` almost nothing usable is left. With it, reports without
+a score are kept (reports with a low score are still dropped). **Their labels were never checked by anyone**; Tranco overlap
+removal and the per-owner limit remove most legitimate sites, but some noise remains. This limitation must be stated with any
+accuracy figure.
+
+```bash
+python -m ml.prepare_data --keep-unscored
+```
 
 `ml/features.py` turns a domain into numbers (length, hyphens, digits, subdomain depth, keywords, entropy, TLD, brand similarity,
 government impersonation). It needs no network and takes about 60 microseconds per name.

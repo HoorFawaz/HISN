@@ -11,9 +11,14 @@ or name the files yourself::
 
 Inputs
     benign     a Tranco list (``rank,domain`` per line; .csv, .zip, .gz or .bz2)
-    malicious  PhishTank and/or URLhaus CSV files (any of the same extensions).
-               A header with a ``url`` column and a date column is required:
-               ``submission_time`` (PhishTank) or ``dateadded`` (URLhaus).
+    malicious  CSV files from ``ml.fetch_phishstats`` (``phishstats*``), PhishTank
+               or URLhaus (any of the same extensions). A header with a ``url``
+               column and a date column is required: ``first_seen``,
+               ``submission_time`` (PhishTank) or ``dateadded`` (URLhaus). If the
+               file has a ``score`` column, rows below ``--min-score`` are skipped, and so are
+               rows with an empty score unless ``--keep-unscored`` is given.
+               Only ``phishstats*``, ``phishtank*`` and ``online-valid*`` files are
+               picked up automatically; name others with ``--malicious``.
 
 What it does, and why (the project brief's "data pitfalls"):
 
@@ -23,9 +28,12 @@ What it does, and why (the project brief's "data pitfalls"):
 3. Removes overlap between the sets: a host in both is dropped from both, and
    a malicious host that belongs to the same registered domain as a benign host
    is dropped (a compromised legitimate site cannot be told apart by its name).
-4. Samples the benign list at random (not the top ranks), so the benign side is
+4. Limits how many hosts one owner or platform can contribute (default 50):
+   without it a single free-hosting service could be most of the malicious set
+   and the model would learn that service instead of phishing traits.
+5. Samples the benign list at random (not the top ranks), so the benign side is
    not just short, famous names.
-5. Splits by time: the newest malicious domains become the test set, so the
+6. Splits by time: the newest malicious domains become the test set, so the
    evaluation asks "can the model catch phishing that appeared after it was
    trained?". Hosts of one registered domain always stay on the same side.
    Benign domains carry no date, so they are split at random with the same ratio.
@@ -54,11 +62,13 @@ from urllib.parse import urlsplit
 
 from config import BASE_DIR
 from dns_server.domain import InvalidDomainError, normalize_domain
-from ml.features import registered_domain, split_host
+from ml.features import concentration_key, registered_domain, split_host
 
 RAW_DIR = BASE_DIR / "data" / "raw"
 DEFAULT_OUT = BASE_DIR / "data" / "processed" / "dataset.csv"
 DEFAULT_BENIGN_LIMIT = 200_000
+DEFAULT_MIN_SCORE = 5.0  # PhishStats reports below this score are too uncertain
+DEFAULT_MAX_PER_KEY = 50  # hosts kept per owner or platform (0 = no limit)
 
 BENIGN, MALICIOUS = 0, 1
 TRAIN, TEST = "train", "test"
@@ -180,14 +190,22 @@ def _row(text: str) -> list[str]:
     return next(csv.reader([text]), [])
 
 
-def read_malicious(path: Path, report: Report) -> Iterator[tuple[str, datetime, str]]:
-    """Yield (host, first_seen, source) from a PhishTank or URLhaus CSV file."""
+def read_malicious(
+    path: Path, report: Report, min_score: float | None = None, keep_unscored: bool = False
+) -> Iterator[tuple[str, datetime, str]]:
+    """Yield (host, first_seen, source) from a PhishTank or URLhaus CSV file.
+
+    With ``min_score`` set, reports scored below it are skipped. Reports with
+    no score at all (PhishStats leaves it empty for most reports) are skipped
+    too, unless ``keep_unscored`` is True: they are then kept and counted, but
+    their label has never been checked by anyone.
+    """
     source = path.name.split(".")[0].lower()
     header: list[str] | None = None
-    url_col = time_col = verified_col = -1
+    url_col = time_col = verified_col = score_col = -1
 
     def set_header(cells: list[str]) -> bool:
-        nonlocal header, url_col, time_col, verified_col
+        nonlocal header, url_col, time_col, verified_col, score_col
         names = [cell.strip().lower() for cell in cells]
         if "url" not in names:
             return False
@@ -195,6 +213,7 @@ def read_malicious(path: Path, report: Report) -> Iterator[tuple[str, datetime, 
         url_col = names.index("url")
         time_col = next((names.index(c) for c in TIME_COLUMNS if c in names), -1)
         verified_col = names.index("verified") if "verified" in names else -1
+        score_col = names.index("score") if "score" in names else -1
         return True
 
     with _open_text(path) as handle:
@@ -218,6 +237,16 @@ def read_malicious(path: Path, report: Report) -> Iterator[tuple[str, datetime, 
             if verified_col >= 0 and cells[verified_col].strip().lower() != "yes":
                 report.add(f"{source}: rows not verified")
                 continue
+            if min_score is not None and score_col >= 0:
+                try:
+                    score = float(cells[score_col])
+                except (ValueError, IndexError):
+                    score = None
+                if score is None and keep_unscored:
+                    report.add(f"{source}: unscored rows kept")
+                elif score is None or score < min_score:
+                    report.add(f"{source}: rows below the score threshold")
+                    continue
             host = url_to_host(cells[url_col])
             if host is None:
                 report.add(f"{source}: rows with unusable host")
@@ -285,6 +314,23 @@ def split_by_time(
     return assignment
 
 
+def cap_per_key(hosts: Iterable[str], limit: int, seed: int) -> tuple[list[str], int]:
+    """Keep at most ``limit`` random hosts per owner/platform. Returns (kept, dropped count)."""
+    groups: dict[str, list[str]] = defaultdict(list)
+    for host in sorted(hosts):
+        groups[concentration_key(host)].append(host)
+    rng = random.Random(seed)
+    kept: list[str] = []
+    dropped = 0
+    for key in sorted(groups):
+        members = groups[key]
+        if len(members) > limit:
+            dropped += len(members) - limit
+            members = sorted(rng.sample(members, limit))
+        kept.extend(members)
+    return kept, dropped
+
+
 def build_dataset(
     benign_paths: Sequence[Path],
     malicious_paths: Sequence[Path],
@@ -292,6 +338,9 @@ def build_dataset(
     benign_limit: int = DEFAULT_BENIGN_LIMIT,
     test_fraction: float = 0.2,
     seed: int = 42,
+    min_score: float | None = None,
+    keep_unscored: bool = False,
+    max_per_key: int = 0,
 ) -> tuple[list[tuple[Sample, str]], Report]:
     """Read, clean and split the feeds. Returns ``[(sample, split), ...]`` and a report."""
     report = Report()
@@ -299,7 +348,7 @@ def build_dataset(
     # 1-2. malicious hosts, deduplicated; the earliest sighting wins
     earliest: dict[str, tuple[datetime, str]] = {}
     for path in malicious_paths:
-        for host, moment, source in read_malicious(path, report):
+        for host, moment, source in read_malicious(path, report, min_score, keep_unscored):
             known = earliest.get(host)
             if known is not None:
                 report.add("malicious duplicates removed")
@@ -327,7 +376,16 @@ def build_dataset(
         del earliest[host]
         report.add("malicious hosts on a benign registered domain (dropped)")
 
-    # 4. random benign sample (taken after the overlap check, from the full list)
+    # 4. no single owner or platform may dominate either class
+    if max_per_key > 0:
+        kept, dropped = cap_per_key(earliest, max_per_key, seed)
+        report.add("malicious hosts over the per-owner limit (dropped)", dropped)
+        earliest = {host: earliest[host] for host in kept}
+        kept_benign, dropped = cap_per_key(benign_hosts, max_per_key, seed)
+        report.add("benign hosts over the per-owner limit (dropped)", dropped)
+        benign_hosts = set(kept_benign)
+
+    # 5. random benign sample (taken after the overlap check, from the full list)
     chosen = sorted(benign_hosts)
     if len(chosen) > benign_limit:
         chosen = random.Random(seed).sample(chosen, benign_limit)
@@ -340,7 +398,7 @@ def build_dataset(
     if not malicious or not benign:
         raise ValueError("need at least one benign and one malicious host after cleaning")
 
-    # 5. time-based, group-aware split
+    # 6. time-based, group-aware split
     assignment = split_by_time(malicious, benign, test_fraction, seed)
     rows = [(sample, assignment[sample.host]) for sample in [*malicious, *benign]]
     return rows, report
@@ -416,7 +474,7 @@ def discover(raw_dir: Path) -> tuple[list[Path], list[Path]]:
         return sorted(found)
 
     benign = pick("tranco*", "top-1m*")
-    malicious = pick("phishtank*", "online-valid*", "verified_online*", "urlhaus*")
+    malicious = pick("phishstats*", "phishtank*", "online-valid*", "verified_online*")
     return benign, malicious
 
 
@@ -428,6 +486,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--benign-limit", type=int, default=DEFAULT_BENIGN_LIMIT)
     parser.add_argument("--test-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE, help="skip scored reports below this")
+    parser.add_argument(
+        "--keep-unscored",
+        action="store_true",
+        help="also keep reports that have no score (their labels are unchecked; see docs/limitations.md)",
+    )
+    parser.add_argument(
+        "--max-per-key", type=int, default=DEFAULT_MAX_PER_KEY, help="hosts kept per owner/platform, 0 = no limit"
+    )
     args = parser.parse_args(argv)
 
     found_benign, found_malicious = discover(RAW_DIR)
@@ -435,8 +502,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     malicious_paths = args.malicious or found_malicious
     if not benign_paths or not malicious_paths:
         print(
-            f"Missing input. Put a Tranco file (name starts with 'tranco') and a PhishTank or "
-            f"URLhaus file (name starts with 'phishtank' or 'urlhaus') in {RAW_DIR}, "
+            f"Missing input. Put a Tranco file (name starts with 'tranco') and a phishing file "
+            f"(from ml.fetch_phishstats, or named 'phishtank...') in {RAW_DIR}, "
             f"or pass --benign and --malicious.",
             file=sys.stderr,
         )
@@ -448,6 +515,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         benign_limit=args.benign_limit,
         test_fraction=args.test_fraction,
         seed=args.seed,
+        min_score=args.min_score,
+        keep_unscored=args.keep_unscored,
+        max_per_key=args.max_per_key,
     )
     write_dataset(rows, args.out)
 
