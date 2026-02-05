@@ -238,3 +238,25 @@ def test_feature_extraction_never_touches_the_network(
     monkeypatch.setattr(socket, "socket", forbidden)
     monkeypatch.setattr(socket, "getaddrinfo", forbidden)
     fx.vector("some-new-name.example.org")
+
+
+@pytest.mark.parametrize(
+    ("host", "feature", "min_similarity"),
+    [
+        ("abhser.com", "lookalike_typo", 0.8),  # swap: two edits for plain Levenshtein, one here
+        ("al-rajhi.net", "lookalike_strong", 1.0),  # hyphen inside the brand
+        ("absher-sa.com", "lookalike_strong", 0.7),
+        ("myalrajhiportal.com", "lookalike_contains", 0.0),  # too long to compare whole
+    ],
+)
+def test_lookalike_features(fx: FeatureExtractor, host: str, feature: str, min_similarity: float) -> None:
+    values = fx.extract(host)
+    assert values[feature] == 1.0
+    assert values["brand_similarity_joined"] >= min_similarity
+
+
+def test_lookalike_features_are_off_for_official_and_unrelated_names(fx: FeatureExtractor) -> None:
+    for host in ("absher.sa", "www.alrajhibank.com.sa", "example.com"):
+        values = fx.extract(host)
+        assert values["lookalike_strong"] == values["lookalike_typo"] == values["lookalike_contains"] == 0.0
+    assert fx.extract("absher.sa")["brand_similarity_joined"] == 0.0
