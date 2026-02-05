@@ -4,7 +4,7 @@ Network-level protection against phishing and fake websites. HISN acts as the DN
 server of a home network: every domain request is checked, and dangerous domains
 are answered with the address of a block page.
 
-> Status: Phase 1 (DNS server with whitelist and blacklist). See the project brief for the full roadmap.
+> Status: Phase 2 (DNS server with whitelist, blacklist, verdict cache and decision log). See the project brief for the full roadmap.
 
 ## Setup
 
@@ -44,6 +44,22 @@ On Linux and macOS `dig @127.0.0.1 -p 5353 absher-sa.com` also works.
 
 Blocked domains get the block page address (`HISN_BLOCK_PAGE_IP`). Everything else is forwarded to the upstream DNS.
 Edit `data/lists/whitelist.txt` and `data/lists/blacklist.txt`, then restart the server.
+
+## Logs and privacy
+
+Every decision is stored in a local SQLite file (`data/hisn.db`, never committed): time, domain,
+verdict, reason and the client address. Nothing else (no URLs, no answers). Invalid queries are not logged.
+
+- Entries older than `HISN_LOG_RETENTION_DAYS` (default 30) are deleted at startup and every hour.
+- Delete old entries now: `python -m storage.db purge`
+- Delete everything: `python -m storage.db delete-all --yes`
+
+Daily allow/block totals contain no domains or devices, so they are kept when old entries are purged
+and removed only by `delete-all`.
+
+Verdicts for unknown domains are cached in memory for `HISN_VERDICT_CACHE_TTL` seconds. The cache is
+checked after the whitelist and blacklist, so editing a list always wins over a cached verdict.
+It stays empty until the ML model (a later phase) starts storing verdicts in it.
 
 ## Run the tests
 

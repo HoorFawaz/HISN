@@ -1,4 +1,4 @@
-"""Tests for the whitelist-then-blacklist decision engine."""
+"""Tests for the whitelist, blacklist and cache decision engine."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from dns_server.decision import (
     Verdict,
     load_domain_list,
 )
+from storage.cache import TTLCache
 
 
 @pytest.fixture
@@ -113,3 +114,43 @@ def test_engine_loads_the_shipped_lists() -> None:
     engine = DecisionEngine.from_files(settings.whitelist_path, settings.blacklist_path)
     assert engine.decide("absher.sa").verdict is Verdict.ALLOW
     assert engine.decide("absher-sa.com").blocked
+
+
+def _engine_with_cache() -> tuple[DecisionEngine, TTLCache[Verdict]]:
+    cache: TTLCache[Verdict] = TTLCache(60)
+    engine = DecisionEngine(
+        whitelist=frozenset({"absher.gov.sa"}),
+        blacklist=frozenset({"evil.example"}),
+        cache=cache,
+    )
+    return engine, cache
+
+
+def test_cached_verdict_is_used_for_unknown_domains() -> None:
+    engine, cache = _engine_with_cache()
+    cache.put("suspicious.example", Verdict.BLOCK)
+    decision = engine.decide("suspicious.example")
+    assert decision.blocked
+    assert decision.reason is Reason.CACHE
+
+
+def test_cache_is_exact_match_only() -> None:
+    engine, cache = _engine_with_cache()
+    cache.put("suspicious.example", Verdict.BLOCK)
+    assert not engine.decide("www.suspicious.example").blocked
+    assert not engine.decide("other-suspicious.example").blocked
+
+
+def test_lists_win_over_the_cache() -> None:
+    engine, cache = _engine_with_cache()
+    cache.put("absher.gov.sa", Verdict.BLOCK)  # a stale/wrong cached verdict
+    cache.put("evil.example", Verdict.ALLOW)
+    assert engine.decide("absher.gov.sa").reason is Reason.WHITELIST
+    assert engine.decide("absher.gov.sa").verdict is Verdict.ALLOW
+    assert engine.decide("evil.example").reason is Reason.BLACKLIST
+    assert engine.decide("evil.example").blocked
+
+
+def test_engine_works_without_a_cache() -> None:
+    engine = DecisionEngine(frozenset(), frozenset())
+    assert engine.decide("anything.example").reason is Reason.DEFAULT
