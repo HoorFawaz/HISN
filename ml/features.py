@@ -87,6 +87,13 @@ _BRAND_FEATURES: tuple[str, ...] = (
     "brand_similarity",
     "brand_impersonation",
     "gov_label_misplaced",
+    # From the look-alike rule (ml/lookalike.py). These survive swapped letters,
+    # hyphens inside the name and look-alike characters, which the edit
+    # distance above misses (a swap counts as two edits there).
+    "lookalike_strong",  # exact brand, brand split by hyphens, or homoglyph
+    "lookalike_typo",  # a few edits from a brand, a swap counting as one
+    "lookalike_contains",  # brand inside a longer word
+    "brand_similarity_joined",  # best similarity of a label without hyphens, 0 on official domains
 )
 FEATURE_NAMES: tuple[str, ...] = (
     _BASE_FEATURES
@@ -127,7 +134,7 @@ def edit_distance(a: str, b: str) -> int:
     return previous[-1]
 
 
-def _fuzzy_allowance(brand: str) -> int:
+def fuzzy_allowance(brand: str) -> int:
     """How many edits still count as "the same brand" (longer names tolerate more)."""
     return 1 if len(brand) < 9 else 2
 
@@ -142,8 +149,12 @@ class FeatureExtractor:
     """
 
     def __init__(self, brands: frozenset[str], whitelist: frozenset[str]) -> None:
+        # Imported here because ml.lookalike itself imports helpers from this module.
+        from ml.lookalike import LookalikeChecker
+
         self._brands = tuple(sorted(brands))
         self._whitelist = whitelist
+        self._lookalike = LookalikeChecker(brands, whitelist)
 
     @classmethod
     def from_files(cls, brands_path: Path, whitelist_path: Path) -> FeatureExtractor:
@@ -183,6 +194,16 @@ class FeatureExtractor:
         features["brand_impersonation"] = float(brand_like and not self._is_official(host))
         # "gov" outside the real suffix, as in absher.gov.sa.fake-login.com
         features["gov_label_misplaced"] = float("gov" in tokens)
+
+        match = self._lookalike.check(host)
+        if match is not None:
+            if match.technique == "typo":
+                features["lookalike_typo"] = 1.0
+            elif match.technique == "contains":
+                features["lookalike_contains"] = 1.0
+            else:
+                features["lookalike_strong"] = 1.0
+        features["brand_similarity_joined"] = self._lookalike.similarity(host)
         return features
 
     def vector(self, host: str) -> list[float]:
@@ -228,7 +249,7 @@ class FeatureExtractor:
                         continue
                     distance = edit_distance(variant, brand)
                     similarity = max(similarity, 1 - distance / max(len(variant), len(brand)))
-                    if distance <= _fuzzy_allowance(brand):
+                    if distance <= fuzzy_allowance(brand):
                         fuzzy = True
         return exact, contained, fuzzy, similarity
 
