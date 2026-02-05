@@ -5,8 +5,8 @@
 # names only match as a whole word, so they are safe to add.
 # Add the brand's official domain to whitelist.txt at the same time.
 absher
-nafath
-tawakkalna
+nafath  # official: iam.gov.sa (confirmed by the project owner, not independently verified)
+tawakkalna  # official: ta.sdaia.gov.sa (confirmed by the project owner, not independently verified)
 alrajhi
 alinma
 riyadbank
