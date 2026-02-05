@@ -4,9 +4,19 @@
 #
 # Every brand in brands.txt should have its official domain here, otherwise the
 # real site looks like an impersonation to the model.
-# TODO: add the official domains of nafath and tawakkalna once confirmed from the
-# organisations' own pages, and re-check every entry before release.
+# Re-check every entry before release.
 absher.sa
 alrajhibank.com.sa
+# Al Rajhi group companies, confirmed by the project owner on 2026-10-17 from
+# their own pages (not independently verified): takaful (insurance), capital, tadawul.
+alrajhitakaful.com
+alrajhi-capital.sa
+alrajhitadawul.com.sa
 alinma.com
 riyadbank.com
+# Nafath, the national platform and Tawakkalna, confirmed by the project owner on
+# 2026-10-17 (not independently verified). Tawakkalna uses ta.sdaia.gov.sa only, not
+# all of sdaia.gov.sa: an entry here also allows every subdomain under it.
+iam.gov.sa
+my.gov.sa
+ta.sdaia.gov.sa
