@@ -154,3 +154,117 @@ def test_lists_win_over_the_cache() -> None:
 def test_engine_works_without_a_cache() -> None:
     engine = DecisionEngine(frozenset(), frozenset())
     assert engine.decide("anything.example").reason is Reason.DEFAULT
+
+
+# --- Phase 5: look-alike rule and model ---------------------------------------
+
+
+class FixedScorer:
+    def __init__(self, probability: float = 0.0, error: Exception | None = None) -> None:
+        self.value = probability
+        self.error = error
+        self.calls = 0
+
+    def probability(self, host: str) -> float:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+
+def _full_engine(
+    scorer: FixedScorer | None = None,
+    techniques: frozenset[str] = frozenset({"brand_name", "hyphenation", "homoglyph", "typo"}),
+    cache: TTLCache[Verdict] | None = None,
+) -> DecisionEngine:
+    from ml.lookalike import LookalikeChecker
+
+    return DecisionEngine(
+        whitelist=frozenset({"absher.sa", "alrajhibank.com.sa"}),
+        blacklist=frozenset({"evil.example"}),
+        cache=cache,
+        lookalike=LookalikeChecker(frozenset({"absher", "alrajhi"}), frozenset({"absher.sa", "alrajhibank.com.sa"})),
+        block_techniques=techniques,
+        scorer=scorer,
+        threshold=0.9,
+    )
+
+
+@pytest.mark.parametrize("host", ["abhser.com", "absher-sa.net", "ab-sher.com", "4bsher.com"])
+def test_lookalike_rule_blocks_on_its_own(host: str) -> None:
+    scorer = FixedScorer(0.0)
+    decision = _full_engine(scorer).decide(host)
+    assert decision.blocked
+    assert decision.reason is Reason.LOOKALIKE
+    assert decision.matched == "absher"
+    assert scorer.calls == 0  # the model is not asked once the rule decided
+
+
+def test_contains_is_left_to_the_model_by_default() -> None:
+    scorer = FixedScorer(0.1)
+    decision = _full_engine(scorer).decide("alrajhitakaful.com")
+    assert decision.reason is Reason.MODEL
+    assert decision.verdict is Verdict.ALLOW
+    assert decision.matched == "0.10"
+
+
+def test_lists_still_come_first() -> None:
+    engine = _full_engine(FixedScorer(1.0))
+    assert engine.decide("www.absher.sa").reason is Reason.WHITELIST
+    assert engine.decide("evil.example").reason is Reason.BLACKLIST
+
+
+@pytest.mark.parametrize(("probability", "blocked"), [(0.95, True), (0.90, True), (0.89, False)])
+def test_model_blocks_at_or_above_the_threshold(probability: float, blocked: bool) -> None:
+    decision = _full_engine(FixedScorer(probability)).decide("x7k2q9zv4m.xyz")
+    assert decision.reason is Reason.MODEL
+    assert decision.blocked is blocked
+
+
+def test_rule_and_model_verdicts_are_cached() -> None:
+    cache: TTLCache[Verdict] = TTLCache(3600)
+    scorer = FixedScorer(0.95)
+    engine = _full_engine(scorer, cache=cache)
+    engine.decide("x7k2q9zv4m.xyz")
+    engine.decide("abhser.com")
+    assert cache.get("x7k2q9zv4m.xyz") is Verdict.BLOCK
+    assert cache.get("abhser.com") is Verdict.BLOCK
+    again = engine.decide("x7k2q9zv4m.xyz")
+    assert again.reason is Reason.CACHE and again.blocked
+    assert scorer.calls == 1
+
+
+def test_list_and_default_verdicts_are_not_cached() -> None:
+    cache: TTLCache[Verdict] = TTLCache(3600)
+    engine = _full_engine(None, cache=cache)
+    engine.decide("absher.sa")
+    engine.decide("evil.example")
+    engine.decide("x7k2q9zv4m.xyz")  # no model: default allow
+    assert len(cache) == 0
+
+
+def test_model_failure_fails_open_and_is_not_cached() -> None:
+    cache: TTLCache[Verdict] = TTLCache(3600)
+    engine = _full_engine(FixedScorer(error=RuntimeError("broken")), cache=cache)
+    decision = engine.decide("x7k2q9zv4m.xyz")
+    assert decision.verdict is Verdict.ALLOW
+    assert decision.reason is Reason.DEFAULT
+    assert len(cache) == 0
+
+
+def test_rule_failure_fails_open() -> None:
+    class BrokenRule:
+        def check(self, host: str) -> None:
+            raise RuntimeError("broken")
+
+    engine = DecisionEngine(frozenset(), frozenset(), lookalike=BrokenRule(), block_techniques={"typo"})
+    assert engine.decide("abhser.com").reason is Reason.DEFAULT
+
+
+def test_empty_technique_set_turns_the_rule_off() -> None:
+    assert _full_engine(None, techniques=frozenset()).decide("abhser.com").reason is Reason.DEFAULT
+
+
+def test_threshold_must_be_a_probability() -> None:
+    with pytest.raises(ValueError):
+        DecisionEngine(frozenset(), frozenset(), threshold=1.5)
