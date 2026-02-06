@@ -18,8 +18,8 @@ uses ``class_weight="balanced_subsample"``: each tree weighs the rare class up
 instead of learning "always say benign".
 
 Output: one ``.joblib`` bundle (model, feature names and the synthetic split)
-at ``HISN_MODEL_PATH`` (default ``ml/models/hisn_rf.joblib``). Model files are
-pickles: only ever load a file you trained yourself.
+at ``HISN_MODEL_PATH`` (default ``ml/models/hisn_rf.joblib``). ``ml.predictor``
+loads it. Model files are pickles: only ever load a file you trained yourself.
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ from config import BASE_DIR, settings
 from dns_server.decision import load_domain_list
 from dns_server.domain import InvalidDomainError
 from ml.features import FEATURE_NAMES, FeatureExtractor
+from ml.predictor import BUNDLE_VERSION, load_bundle  # noqa: F401  (load_bundle is re-exported)
 from ml.prepare_data import BENIGN, MALICIOUS, TEST, TRAIN
 from ml.typosquat import DEFAULT_PER_TECHNIQUE, TECHNIQUES, SyntheticDomain, generate, split_brands, split_synthetic
 
@@ -50,7 +51,6 @@ DEFAULT_DATASET = BASE_DIR / "data" / "processed" / "dataset.csv"
 DEFAULT_TREES = 300
 DEFAULT_SYNTHETIC_TEST_FRACTION = 0.3
 REQUIRED_COLUMNS = ("host", "label", "split")
-BUNDLE_VERSION = 2  # 2: look-alike features and per-technique balancing
 
 
 @dataclass(frozen=True)
@@ -191,19 +191,6 @@ def train(
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(bundle, out_path, compress=3)
-    return bundle
-
-
-def load_bundle(path: Path) -> dict[str, Any]:
-    """Load a bundle written by :func:`train` and check it matches this code.
-
-    Only load files you trained yourself: joblib files can run code when loaded.
-    """
-    bundle = joblib.load(path)
-    if not isinstance(bundle, dict) or bundle.get("bundle_version") != BUNDLE_VERSION:
-        raise ValueError(f"{path.name}: not a HISN model bundle (retrain with python -m ml.train)")
-    if tuple(bundle["feature_names"]) != FEATURE_NAMES:
-        raise ValueError(f"{path.name}: trained with different features (retrain with python -m ml.train)")
     return bundle
 
 
