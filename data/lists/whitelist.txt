@@ -2,5 +2,11 @@
 # One domain per line, lowercase, no scheme, no path. Lines starting with # are ignored.
 # Matching is by label boundary: host == d or host.endswith("." + d).
 #
-# TODO: verify every entry against the organisation's official website before release.
+# Every brand in brands.txt should have its official domain here, otherwise the
+# real site looks like an impersonation to the model.
+# TODO: add the official domains of nafath and tawakkalna once confirmed from the
+# organisations' own pages, and re-check every entry before release.
 absher.sa
+alrajhibank.com.sa
+alinma.com
+riyadbank.com

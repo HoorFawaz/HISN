@@ -1,8 +1,12 @@
 # Main-label names of Saudi government and bank brands, used for similarity checks.
 # One lowercase label per line (no TLD). Lines starting with # are ignored.
 #
-# TODO: review and extend this list in Phase 3.
+# Names of 6+ letters also match inside longer words and with one typo. Shorter
+# names only match as a whole word, so they are safe to add.
+# Add the brand's official domain to whitelist.txt at the same time.
 absher
 nafath
 tawakkalna
 alrajhi
+alinma
+riyadbank

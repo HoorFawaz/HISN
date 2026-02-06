@@ -14,6 +14,10 @@ certs/
 data/raw/*
 !data/raw/.gitkeep
 
+# Processed datasets (derived from third-party feeds, regenerate with ml/prepare_data.py)
+data/processed/*
+!data/processed/.gitkeep
+
 # Databases and logs
 *.db
 *.sqlite

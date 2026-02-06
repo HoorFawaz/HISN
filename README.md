@@ -4,7 +4,7 @@ Network-level protection against phishing and fake websites. HISN acts as the DN
 server of a home network: every domain request is checked, and dangerous domains
 are answered with the address of a block page.
 
-> Status: Phase 2 (DNS server with whitelist, blacklist, verdict cache and decision log). See the project brief for the full roadmap.
+> Status: Phase 3 (DNS server with lists, verdict cache and decision log; dataset preparation and domain features for the model). See the project brief for the full roadmap.
 
 ## Setup
 
@@ -60,6 +60,35 @@ and removed only by `delete-all`.
 Verdicts for unknown domains are cached in memory for `HISN_VERDICT_CACHE_TTL` seconds. The cache is
 checked after the whitelist and blacklist, so editing a list always wins over a cached verdict.
 It stays empty until the ML model (a later phase) starts storing verdicts in it.
+
+## Prepare the data (Phase 3)
+
+The model learns from public feeds. They are third-party data, so they stay in `data/raw/` and
+`data/processed/`, which git ignores. Save the files with these names (the script finds them by name):
+
+| File in `data/raw/` | What | Where from |
+|---|---|---|
+| `tranco.csv.zip` | benign names | `https://tranco-list.eu/top-1m-incl-subdomains.csv.zip` (permanent link; keeps subdomains, like real DNS traffic) |
+| `phishtank.csv.bz2` | phishing | PhishTank downloads (`online-valid.csv.bz2`). Automated downloads need a free application key. |
+| `urlhaus.csv` | malware URLs | URLhaus `recent.csv` export. It needs a free abuse.ch Auth-Key. |
+
+One benign file and at least one malicious file are enough. Then run:
+
+```bash
+python -m ml.prepare_data
+```
+
+It writes `data/processed/dataset.csv` and prints a cleaning report. Things it does on purpose: drops IP-address hosts,
+duplicates and overlap between the two classes, samples the benign list at random (200,000 by default, `--benign-limit`),
+and splits by time: the **newest** malicious domains form the test set, and hosts of one registered domain never end up on both
+sides. Benign names have no date, so they are split at random with the same ratio. Read the "Dataset" lines in the output:
+if the two classes differ a lot on something unrelated to phishing, the model could learn the data source instead.
+
+`ml/features.py` turns a domain into numbers (length, hyphens, digits, subdomain depth, keywords, entropy, TLD, brand similarity,
+government impersonation). It needs no network and takes about 60 microseconds per name.
+
+Brands in `data/lists/brands.txt` need their official domain in `data/lists/whitelist.txt`, otherwise the real site looks like
+an impersonation. Add them together, and only after checking the domain on the organisation's own pages.
 
 ## Run the tests
 
