@@ -96,7 +96,7 @@ def start_hisn(upstream_port: int, database: Database) -> Iterator[Callable[...,
     """Return a function that starts a HISN server and gives back its port."""
     started: list[DNSServer] = []
 
-    def _start(**overrides: object) -> int:
+    def _start(engine: DecisionEngine | None = None, **overrides: object) -> int:
         port = _free_port()
         values: dict[str, object] = {
             "dns_host": "127.0.0.1",
@@ -109,10 +109,11 @@ def start_hisn(upstream_port: int, database: Database) -> Iterator[Callable[...,
         }
         values.update(overrides)  # tests may override any default above
         config: Settings = dataclasses.replace(settings, **values)  # type: ignore[arg-type]
-        engine = DecisionEngine(
-            whitelist=frozenset({"absher.gov.sa"}),
-            blacklist=frozenset({"absher-sa.com"}),
-        )
+        if engine is None:
+            engine = DecisionEngine(
+                whitelist=frozenset({"absher.gov.sa"}),
+                blacklist=frozenset({"absher-sa.com"}),
+            )
         upstream = UpstreamResolver(
             str(config.upstream_dns), config.upstream_port, config.upstream_timeout
         )
@@ -277,3 +278,46 @@ def test_storage_failure_does_not_break_dns_answers(
     database.close()  # every later log call raises sqlite3.ProgrammingError
     reply = _ask(port, "example.com")
     assert _addresses(reply) == ["192.0.2.1"]
+
+
+# --- Phase 5: look-alike rule and model in the live server ------------------
+
+
+class _FixedScorer:
+    def __init__(self, probability: float) -> None:
+        self.value = probability
+
+    def probability(self, host: str) -> float:
+        return self.value
+
+
+def _phase5_engine(probability: float = 0.0) -> DecisionEngine:
+    from ml.lookalike import LookalikeChecker
+    from storage.cache import TTLCache
+
+    return DecisionEngine(
+        whitelist=frozenset({"absher.sa"}),
+        blacklist=frozenset(),
+        cache=TTLCache(3600),
+        lookalike=LookalikeChecker(frozenset({"absher"}), frozenset({"absher.sa"})),
+        block_techniques={"brand_name", "typo"},
+        scorer=_FixedScorer(probability),
+        threshold=0.9,
+    )
+
+
+def test_lookalike_is_blocked_and_logged(start_hisn: Callable[..., int], database: Database) -> None:
+    port = start_hisn(engine=_phase5_engine())
+    assert _addresses(_ask(port, "abhser.com")) == [BLOCK_PAGE_IP]
+    assert _addresses(_ask(port, "absher.sa")) == ["192.0.2.1"]
+    rows = {row.domain: row for row in database.recent_requests()}
+    assert (rows["abhser.com"].verdict, rows["abhser.com"].reason) == ("block", "lookalike")
+    assert rows["absher.sa"].reason == "whitelist"
+
+
+def test_model_blocks_above_the_threshold(start_hisn: Callable[..., int], database: Database) -> None:
+    port = start_hisn(engine=_phase5_engine(probability=0.95))
+    assert _addresses(_ask(port, "x7k2q9zv4m.xyz")) == [BLOCK_PAGE_IP]
+    _ask(port, "x7k2q9zv4m.xyz")  # second time: from the cache
+    reasons = [row.reason for row in database.recent_requests() if row.domain == "x7k2q9zv4m.xyz"]
+    assert sorted(reasons) == ["cache", "model"]
