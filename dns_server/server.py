@@ -7,9 +7,13 @@ Flow for each query:
 1. Drop it silently if the client is outside the allowed networks, so the
    server can never be abused as an open resolver.
 2. Validate and normalize the queried name. Invalid names get REFUSED.
-3. Ask the decision engine and log the decision (minimal data, see
+3. Ask the decision engine (lists, cache, look-alike rule, model; see
+   ``dns_server/decision.py``) and log the decision (minimal data, see
    ``storage/schema.sql``). Blocked names get the block page address,
    everything else is forwarded to the upstream DNS server.
+
+The model and the rule are optional at startup: if the model file is missing
+or cannot be loaded, the server logs a warning and runs without it.
 """
 
 from __future__ import annotations
@@ -37,6 +41,8 @@ from config import Settings, settings
 from dns_server.decision import Decision, DecisionEngine, Verdict
 from dns_server.domain import InvalidDomainError, name_from_labels, normalize_domain
 from dns_server.resolver import UpstreamError, UpstreamResolver
+from ml.lookalike import LookalikeChecker
+from ml.predictor import Predictor
 from storage.cache import TTLCache
 from storage.db import Database
 
@@ -98,12 +104,13 @@ class HisnResolver(BaseResolver):
         decision = self._engine.decide(domain)
         qtype = QTYPE[request.q.qtype]
         logger.info(
-            "%s %s %s -> %s (%s)",
+            "%s %s %s -> %s (%s%s)",
             client_ip,
             domain,
             qtype,
             decision.verdict.value,
             decision.reason.value,
+            f" {decision.matched}" if decision.matched else "",
         )
 
         self._log_decision(domain, decision, client_ip)
@@ -213,6 +220,42 @@ def _purge_old_logs(database: Database) -> None:
         logger.info("purged %d requests older than %d days", removed, settings.log_retention_days)
 
 
+def load_lookalike(config: Settings) -> LookalikeChecker | None:
+    """The look-alike rule, or None if it is turned off (HISN_LOOKALIKE_BLOCK empty)."""
+    if not config.lookalike_block:
+        logger.info("look-alike rule is off")
+        return None
+    checker = LookalikeChecker.from_files(config.brands_path, config.whitelist_path)
+    logger.info("look-alike rule blocks: %s", ", ".join(sorted(config.lookalike_block)))
+    return checker
+
+
+def load_predictor(config: Settings) -> Predictor | None:
+    """The trained model, or None (fail open) if it is missing or unusable."""
+    if not config.model_path.exists():
+        logger.warning("no model at %s; running without it (python -m ml.train)", config.model_path)
+        return None
+    try:
+        predictor = Predictor.from_files(config.model_path, config.brands_path, config.whitelist_path)
+    except Exception:  # a bad model file must not stop DNS
+        logger.exception("could not load the model at %s; running without it", config.model_path)
+        return None
+    logger.info("model loaded from %s, blocking at %.2f", config.model_path, config.model_threshold)
+    return predictor
+
+
+def build_engine(config: Settings, cache: TTLCache[Verdict]) -> DecisionEngine:
+    return DecisionEngine.from_files(
+        config.whitelist_path,
+        config.blacklist_path,
+        cache,
+        lookalike=load_lookalike(config),
+        block_techniques=config.lookalike_block,
+        scorer=load_predictor(config),
+        threshold=config.model_threshold,
+    )
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -220,7 +263,7 @@ def main() -> int:
     )
 
     cache: TTLCache[Verdict] = TTLCache(settings.verdict_cache_ttl)
-    engine = DecisionEngine.from_files(settings.whitelist_path, settings.blacklist_path, cache)
+    engine = build_engine(settings, cache)
     upstream = UpstreamResolver(
         str(settings.upstream_dns), settings.upstream_port, settings.upstream_timeout
     )
