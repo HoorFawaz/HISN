@@ -42,6 +42,25 @@ Every result figure HISN reports depends on these points. Quote them next to any
   evidence.
 - The Unicode look-alike table covers common Cyrillic and Greek letters only.
 
+## In the DNS server (Phase 5)
+
+- **Fail open.** If the model file is missing, broken, or fails on a name, the name is allowed and the
+  problem is logged. Protection then rests on the lists and the look-alike rule only. This is on purpose:
+  a broken model must not take the home network offline.
+- **The rule blocks on its own.** `typo` matches (one or two letters away from a brand) block without the
+  model, so a legitimate name close to a brand (for example `asher.com` for `absher`) is blocked until it
+  is added to the whitelist. `contains` matches do not block on their own by default.
+- **Blocking threshold.** 0.90 favours precision: on the first Phase 4 run (before the look-alike
+  features) it gave precision 0.96 and recall 0.15 on the temporal test split, so most phishing names
+  that only the model could catch are still allowed. The look-alike rule and the blacklist carry most of
+  the protection. Re-check the threshold table in `python -m ml.evaluate` after every retraining.
+- **Cached verdicts.** A verdict lasts up to one hour. A name that becomes dangerous within that hour, or
+  a wrong block, stays as it was until the entry expires or the server restarts. The whitelist and
+  blacklist always win over the cache.
+- **Speed.** The first query for a new name runs the features and the forest (some milliseconds);
+  repeats come from the cache.
+- **The model is loaded at startup.** After retraining, restart the server.
+
 ## Tiny whitelist
 
 The whitelist holds a handful of official domains. Every brand added to `brands.txt` needs its
