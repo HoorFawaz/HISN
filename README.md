@@ -4,7 +4,7 @@ Network-level protection against phishing and fake websites. HISN acts as the DN
 server of a home network: every domain request is checked, and dangerous domains
 are answered with the address of a block page.
 
-> Status: Phase 4 (DNS server with lists, verdict cache and decision log; dataset, domain features, look-alike handling, model training and evaluation). The model is not used by the server yet (Phase 5). See the project brief for the full roadmap.
+> Status: Phase 5 (DNS server with lists, verdict cache and decision log; dataset, domain features, look-alike handling, model training and evaluation; the look-alike rule and the model now decide unknown names in the server). See the project brief for the full roadmap.
 
 ## Setup
 
@@ -45,6 +45,32 @@ On Linux and macOS `dig @127.0.0.1 -p 5353 absher-sa.com` also works.
 Blocked domains get the block page address (`HISN_BLOCK_PAGE_IP`). Everything else is forwarded to the upstream DNS.
 Edit `data/lists/whitelist.txt` and `data/lists/blacklist.txt`, then restart the server.
 
+### How a name is decided (Phase 5)
+
+The first step that gives an answer wins:
+
+1. whitelist (always allow), 2. blacklist (always block), 3. verdict cache,
+4. look-alike rule: a name that imitates a brand in `brands.txt` is blocked on its own,
+5. model: blocked if its probability is at least `HISN_MODEL_THRESHOLD` (default 0.90), otherwise allowed,
+6. default: allow.
+
+Only steps 4 and 5 store their verdict in the cache. `HISN_LOOKALIKE_BLOCK` lists the look-alike
+techniques that block on their own (default `brand_name,hyphenation,homoglyph,typo`; leave it empty to
+turn the rule off). `contains` (the brand inside a longer word) is left to the model by default, because
+a bank's own sister companies look like that.
+
+The model is loaded once at startup from `HISN_MODEL_PATH`. If the file is missing or broken, the server
+logs a warning and runs without it; if the model fails on a name, that name is allowed and the error is
+logged. After retraining, restart the server. The first query for a new name takes some milliseconds
+longer (feature extraction and the forest); repeats come from the cache.
+
+The reason of every decision (`whitelist`, `blacklist`, `cache`, `lookalike`, `model`, `default`) is in
+the log, so you can see why a name was blocked:
+
+```bash
+python -c "from storage.db import Database; [print(r.verdict, r.reason, r.domain) for r in Database('data/hisn.db').recent_requests(10)]"
+```
+
 ## Logs and privacy
 
 Every decision is stored in a local SQLite file (`data/hisn.db`, never committed): time, domain,
@@ -57,9 +83,9 @@ verdict, reason and the client address. Nothing else (no URLs, no answers). Inva
 Daily allow/block totals contain no domains or devices, so they are kept when old entries are purged
 and removed only by `delete-all`.
 
-Verdicts for unknown domains are cached in memory for `HISN_VERDICT_CACHE_TTL` seconds. The cache is
-checked after the whitelist and blacklist, so editing a list always wins over a cached verdict.
-It stays empty until the ML model (a later phase) starts storing verdicts in it.
+Verdicts of the look-alike rule and the model are cached in memory for `HISN_VERDICT_CACHE_TTL` seconds
+(default one hour, at most 10,000 names). The cache is checked after the whitelist and blacklist, so
+editing a list always wins over a cached verdict.
 
 ## Prepare the data (Phase 3)
 
