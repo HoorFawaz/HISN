@@ -25,6 +25,12 @@ IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
 
 _DEFAULT_ALLOWED_NETWORKS = "127.0.0.0/8,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
 
+# Look-alike techniques (see ml/lookalike.py). "contains" (the brand inside a
+# longer word, such as a bank's own sister company) is left to the model by
+# default because it has the most false positives.
+LOOKALIKE_TECHNIQUES = ("brand_name", "hyphenation", "homoglyph", "typo", "contains")
+_DEFAULT_LOOKALIKE_BLOCK = "brand_name,hyphenation,homoglyph,typo"
+
 
 class ConfigError(ValueError):
     """Raised when a configuration value is missing or invalid."""
@@ -83,6 +89,16 @@ def _env_networks(name: str, default: str) -> tuple[IPNetwork, ...]:
     return tuple(networks)
 
 
+def _env_choices(name: str, default: str, choices: tuple[str, ...]) -> frozenset[str]:
+    """Parse a comma-separated subset of ``choices``. Empty means none."""
+    raw = _env_str(name, default)
+    values = frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+    unknown = values - set(choices)
+    if unknown:
+        raise ConfigError(f"{name} has unknown value(s) {', '.join(sorted(unknown))}; use {', '.join(choices)}")
+    return values
+
+
 def _env_path(name: str, default: str) -> Path:
     """Resolve a path relative to the project root unless it is absolute."""
     path = Path(_env_str(name, default))
@@ -105,6 +121,7 @@ class Settings:
     # Model decision threshold: probability above which a domain is blocked.
     model_threshold: float
     model_path: Path  # trained model bundle written by ml/train.py
+    lookalike_block: frozenset[str]  # look-alike techniques that block on their own
 
     # Storage
     db_path: Path
@@ -146,8 +163,9 @@ def load_settings() -> Settings:
         upstream_timeout=_env_float("HISN_UPSTREAM_TIMEOUT", 2.0, minimum=0.1, maximum=10.0),
         allowed_networks=_env_networks("HISN_ALLOWED_NETWORKS", _DEFAULT_ALLOWED_NETWORKS),
         block_page_ip=_env_ip("HISN_BLOCK_PAGE_IP", "127.0.0.1"),
-        model_threshold=_env_float("HISN_MODEL_THRESHOLD", 0.80, minimum=0.0, maximum=1.0),
+        model_threshold=_env_float("HISN_MODEL_THRESHOLD", 0.90, minimum=0.0, maximum=1.0),
         model_path=_env_path("HISN_MODEL_PATH", "ml/models/hisn_rf.joblib"),
+        lookalike_block=_env_choices("HISN_LOOKALIKE_BLOCK", _DEFAULT_LOOKALIKE_BLOCK, LOOKALIKE_TECHNIQUES),
         db_path=_env_path("HISN_DB_PATH", "data/hisn.db"),
         log_retention_days=_env_int("HISN_LOG_RETENTION_DAYS", 30, minimum=1, maximum=365),
         verdict_cache_ttl=_env_int("HISN_VERDICT_CACHE_TTL", 3600, minimum=1, maximum=86400),
