@@ -20,6 +20,8 @@ from ml.prepare_data import (
     Report,
     Sample,
     build_dataset,
+    cap_per_key,
+    discover,
     main,
     parse_time,
     read_benign,
@@ -294,3 +296,102 @@ def test_cli_without_inputs_explains_what_is_missing(
     monkeypatch.setattr(module, "RAW_DIR", tmp_path)  # an empty folder
     assert main([]) == 1
     assert "Missing input" in capsys.readouterr().err
+
+
+# ----- PhishStats-style files, score filter and per-owner limit -----
+
+
+def _phishstats_file(path: Path, rows: list[tuple[int, str, int, str]]) -> Path:
+    """rows: (id, host, day, score) -> CSV in the format ml.fetch_phishstats writes."""
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["id", "url", "first_seen", "score"])
+        for ident, host, day, score in rows:
+            writer.writerow([ident, f"http://{host}/login", (DAY0 + timedelta(days=day)).isoformat(), score])
+    return path
+
+
+def test_score_threshold_skips_weak_and_unscored_reports(tmp_path: Path) -> None:
+    path = _phishstats_file(
+        tmp_path / "phishstats.csv",
+        [(1, "strong.example", 1, "8.0"), (2, "borderline.example", 2, "5.0"), (3, "weak.example", 3, "2.5"), (4, "none.example", 4, "")],
+    )
+    report = Report()
+    rows = list(read_malicious(path, report, min_score=5.0))
+    assert [host for host, _, _ in rows] == ["strong.example", "borderline.example"]
+    assert report.counts["phishstats: rows below the score threshold"] == 2
+    assert rows[0][2] == "phishstats"
+
+
+def test_keep_unscored_keeps_empty_scores_but_still_drops_weak_ones(tmp_path: Path) -> None:
+    path = _phishstats_file(
+        tmp_path / "phishstats.csv",
+        [(1, "strong.example", 1, "8.0"), (2, "weak.example", 2, "2.5"), (3, "none.example", 3, "")],
+    )
+    report = Report()
+    rows = list(read_malicious(path, report, min_score=5.0, keep_unscored=True))
+    assert [host for host, _, _ in rows] == ["strong.example", "none.example"]
+    assert report.counts["phishstats: rows below the score threshold"] == 1
+    assert report.counts["phishstats: unscored rows kept"] == 1
+
+
+def test_build_dataset_keep_unscored_flag(tmp_path: Path) -> None:
+    benign, _ = _write_inputs(tmp_path)
+    reports = [(i, f"phish{i}.bad{i}.xyz", i, "" if i % 2 else "8.0") for i in range(1, 21)]
+    malicious = _phishstats_file(tmp_path / "phishstats.csv", reports)
+    strict, _ = build_dataset([benign], [malicious], benign_limit=1000, min_score=5.0)
+    loose, report = build_dataset([benign], [malicious], benign_limit=1000, min_score=5.0, keep_unscored=True)
+    assert sum(s.label == MALICIOUS for s, _ in strict) == 10
+    assert sum(s.label == MALICIOUS for s, _ in loose) == 20
+    assert report.counts["phishstats: unscored rows kept"] == 10
+
+
+def test_without_a_threshold_every_row_is_read(tmp_path: Path) -> None:
+    path = _phishstats_file(tmp_path / "phishstats.csv", [(1, "a.example", 1, "1.0"), (2, "b.example", 2, "")])
+    assert len(list(read_malicious(path, Report()))) == 2
+
+
+def test_cap_per_key_limits_each_owner_and_platform() -> None:
+    hosts = [f"pub-{i}.r2.dev" for i in range(30)]  # one shared platform
+    hosts += [f"sub{i}.bigsite.com" for i in range(30)]  # one registered domain
+    hosts += ["alone.example.org", "other.example.net"]
+    kept, dropped = cap_per_key(hosts, limit=10, seed=1)
+    assert dropped == 40
+    assert sum(h.endswith(".r2.dev") for h in kept) == 10
+    assert sum(h.endswith(".bigsite.com") for h in kept) == 10
+    assert "alone.example.org" in kept and "other.example.net" in kept
+    assert cap_per_key(hosts, limit=10, seed=1) == (kept, dropped)  # deterministic
+
+
+def test_cap_does_not_merge_unrelated_domains_under_one_suffix() -> None:
+    hosts = [f"site{i}.com" for i in range(30)]  # 30 different owners under ".com"
+    kept, dropped = cap_per_key(hosts, limit=5, seed=0)
+    assert dropped == 0 and len(kept) == 30
+
+
+def test_build_dataset_applies_score_and_owner_limits(tmp_path: Path) -> None:
+    benign, _ = _write_inputs(tmp_path)
+    reports = [(i, f"pub-{i}.r2.dev", i % 40, "9.0") for i in range(1, 81)]  # one platform, 80 hosts
+    reports += [(100 + i, f"phish{i}.bad{i}.xyz", i % 40, "7.0") for i in range(30)]
+    reports += [(200 + i, f"weak{i}.bad-weak{i}.top", i % 40, "1.0") for i in range(10)]
+    malicious = _phishstats_file(tmp_path / "phishstats.csv", reports)
+    rows, report = build_dataset(
+        [benign], [malicious], benign_limit=1000, min_score=5.0, max_per_key=20
+    )
+    bad = [s.host for s, _ in rows if s.label == MALICIOUS]
+    assert sum(h.endswith(".r2.dev") for h in bad) == 20
+    assert not any("weak" in h for h in bad)
+    assert len(bad) == 20 + 30
+    assert report.counts["malicious hosts over the per-owner limit (dropped)"] == 60
+    assert report.counts["phishstats: rows below the score threshold"] == 10
+
+
+# ----- finding the files -----
+
+
+def test_discover_finds_phishstats_and_ignores_urlhaus(tmp_path: Path) -> None:
+    for name in ("tranco.csv.zip", "phishstats.csv", "phishtank.csv.bz2", "urlhaus.csv", "notes.txt"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    benign, malicious = discover(tmp_path)
+    assert [p.name for p in benign] == ["tranco.csv.zip"]
+    assert [p.name for p in malicious] == ["phishstats.csv", "phishtank.csv.bz2"]
