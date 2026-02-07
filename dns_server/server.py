@@ -13,7 +13,9 @@ Flow for each query:
    everything else is forwarded to the upstream DNS server.
 
 The model and the rule are optional at startup: if the model file is missing
-or cannot be loaded, the server logs a warning and runs without it.
+or cannot be loaded, the server logs a warning and runs without it. Domain
+ages (``ml/domain_age.py``) are looked up in background threads and only used
+by the model; ``HISN_DOMAIN_AGE_LOOKUP=false`` turns the lookups off.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from config import Settings, settings
 from dns_server.decision import Decision, DecisionEngine, Verdict
 from dns_server.domain import InvalidDomainError, name_from_labels, normalize_domain
 from dns_server.resolver import UpstreamError, UpstreamResolver
+from ml.domain_age import DomainAgeService, RdapClient
 from ml.lookalike import LookalikeChecker
 from ml.predictor import Predictor
 from storage.cache import TTLCache
@@ -244,15 +247,29 @@ def load_predictor(config: Settings) -> Predictor | None:
     return predictor
 
 
-def build_engine(config: Settings, cache: TTLCache[Verdict]) -> DecisionEngine:
+def load_age_service(config: Settings) -> DomainAgeService | None:
+    """Background domain-age lookups, or None if turned off (HISN_DOMAIN_AGE_LOOKUP=false)."""
+    if not config.domain_age_lookup:
+        logger.info("domain age lookups are off; the model scores names only")
+        return None
+    logger.info("domain age lookups on (RDAP, timeout %.1fs)", config.domain_age_timeout)
+    return DomainAgeService(RdapClient(config.domain_age_timeout), known_ttl=config.domain_age_cache_ttl)
+
+
+def build_engine(
+    config: Settings, cache: TTLCache[Verdict], ages: DomainAgeService | None = None
+) -> DecisionEngine:
+    scorer = load_predictor(config)
     return DecisionEngine.from_files(
         config.whitelist_path,
         config.blacklist_path,
         cache,
         lookalike=load_lookalike(config),
         block_techniques=config.lookalike_block,
-        scorer=load_predictor(config),
+        scorer=scorer,
         threshold=config.model_threshold,
+        # Ages only feed the model, so without a model there is nothing to look up.
+        ages=ages if scorer is not None else None,
     )
 
 
@@ -263,7 +280,8 @@ def main() -> int:
     )
 
     cache: TTLCache[Verdict] = TTLCache(settings.verdict_cache_ttl)
-    engine = build_engine(settings, cache)
+    ages = load_age_service(settings)
+    engine = build_engine(settings, cache, ages)
     upstream = UpstreamResolver(
         str(settings.upstream_dns), settings.upstream_port, settings.upstream_timeout
     )
@@ -293,6 +311,8 @@ def main() -> int:
         tcp.server.shutdown()
         udp.server.server_close()
         tcp.server.server_close()
+        if ages is not None:
+            ages.close()
         database.close()
     return 0
 

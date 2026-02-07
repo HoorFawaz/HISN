@@ -4,7 +4,7 @@ Network-level protection against phishing and fake websites. HISN acts as the DN
 server of a home network: every domain request is checked, and dangerous domains
 are answered with the address of a block page.
 
-> Status: Phase 5 (DNS server with lists, verdict cache and decision log; dataset, domain features, look-alike handling, model training and evaluation; the look-alike rule and the model now decide unknown names in the server). See the project brief for the full roadmap.
+> Status: Phase 6 (DNS server with lists, verdict cache and decision log; dataset, domain features, look-alike handling, model training and evaluation; the look-alike rule and the model decide unknown names in the server; the model also uses the domain age when it is known). See the project brief for the full roadmap.
 
 ## Setup
 
@@ -51,7 +51,8 @@ The first step that gives an answer wins:
 
 1. whitelist (always allow), 2. blacklist (always block), 3. verdict cache,
 4. look-alike rule: a name that imitates a brand in `brands.txt` is blocked on its own,
-5. model: blocked if its probability is at least `HISN_MODEL_THRESHOLD` (default 0.90), otherwise allowed,
+5. model: blocked if its probability is at least `HISN_MODEL_THRESHOLD` (default 0.90), otherwise allowed.
+   The domain age is one of its inputs when it is already known (Phase 6, below),
 6. default: allow.
 
 Only steps 4 and 5 store their verdict in the cache. `HISN_LOOKALIKE_BLOCK` lists the look-alike
@@ -70,6 +71,25 @@ the log, so you can see why a name was blocked:
 ```bash
 python -c "from storage.db import Database; [print(r.verdict, r.reason, r.domain) for r in Database('data/hisn.db').recent_requests(10)]"
 ```
+
+### Domain age (Phase 6)
+
+Newly registered domains are riskier. When the model scores a name, the server also asks for the
+registration date of its registered domain (`example.com` for `login.example.com`) from RDAP, the
+JSON successor of WHOIS that registries serve over HTTPS. The lookup runs in background threads and
+**never delays the DNS answer**:
+
+- the first query for a domain is scored on the name alone, and that verdict is not cached;
+- once the lookup has finished (usually within a second), the next query is scored with the age and
+  that verdict is cached as before;
+- a missing age (no RDAP server for the suffix, timeout, error, deleted domain) means "unknown",
+  which never blocks on its own.
+
+Registration dates are kept in memory for `HISN_DOMAIN_AGE_CACHE_TTL` seconds (default 7 days);
+"no data" answers are retried after a day, failures after an hour. Hosts on shared platforms
+(`x.netlify.app`, `x.duckdns.org`) are never looked up and always have an unknown age. Lookups send the registered domain
+(never the full host) to the registry of its suffix. Set `HISN_DOMAIN_AGE_LOOKUP=false` to turn them
+off; the model then scores names only.
 
 ## Logs and privacy
 
@@ -168,8 +188,8 @@ Evaluate:
 python -m ml.evaluate
 ```
 
-It prints three separate results: precision, recall and the confusion matrix on the newest phishing
-names (the temporal test split), the model's recall on look-alikes of held-out brands, by brand and
+It prints separate results: precision, recall and the confusion matrix on the newest phishing
+names (the temporal test split, scored on the name alone), the model's recall on look-alikes of held-out brands, by brand and
 by technique, and the rule's recall plus how many benign test names it wrongly flags. Accuracy is not
 shown: with about 1 malicious name per 43 benign ones it says nothing. `--threshold 0.6` tries another
 blocking threshold (default `HISN_MODEL_THRESHOLD`).
@@ -179,6 +199,40 @@ To also test a trick the model never saw, hold a technique out of training:
 ```bash
 python -m ml.train --holdout-technique transposition
 ```
+
+### Domain ages for training (Phase 6)
+
+The model can only learn from the age if some training names have one. Look them up once (no key
+needed, about one second per domain on purpose, so the registries are not flooded):
+
+```bash
+python -m ml.fetch_domain_age --max-lookups 300
+```
+
+It picks registered domains from `dataset.csv` at random, half malicious and half benign, and appends
+the answers to `data/processed/domain_age.csv` (never committed). Run it again to add more; domains
+already answered are skipped. Failed lookups are marked `failed` and skipped too; add `--retry-failed`
+to try them again. Hosts on shared platforms (`x.netlify.app`, `x.duckdns.org`, `pub-….r2.dev`) are never
+looked up, because the registry only knows the platform. Then retrain and evaluate:
+
+```bash
+python -m ml.train
+python -m ml.evaluate
+```
+
+`ml.train` uses the file when it exists. A malicious name's age is taken on the day it was reported,
+a benign name's on the day it was checked. The age is **not** a forest feature: only a small sample of
+names has one, and a mostly empty column teaches the forest the wrong thing. Instead the forest judges
+the name alone, and an **age table** (`ml/age_table.py`) learned from the train rows with an age moves
+its probability: for each age range (under 7 days, 7-30 days, ... over 10 years) it stores how much more
+often that range is malicious than benign, capped at 10x either way. An unknown age changes nothing,
+and the cap means a brand-new domain with a clean-looking name is still allowed. `ml.train` prints
+the table; `ml.evaluate` adds a fourth result: the age of each class, the table, and the test names
+with a known age scored with and without it. Without the file (or with fewer than 30 aged train
+rows per class) there is no table and the model scores names only.
+
+The model file format changed in Phase 6, so an older model is refused at startup and the server
+runs without a model until you retrain.
 
 **Every number depends on labels nobody reviewed and on generated look-alikes.** Read
 [docs/limitations.md](docs/limitations.md) before quoting one. A larger brand list is proposed in

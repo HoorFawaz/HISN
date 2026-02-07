@@ -12,6 +12,11 @@ What goes in:
   labelled malicious. Only the *training brands* are used: some brands are
   held out entirely, so ``ml.evaluate`` can measure look-alikes of brands the
   model never saw. ``--holdout-technique`` holds out a whole technique too.
+- Domain ages from ``data/processed/domain_age.csv`` (``ml.fetch_domain_age``),
+  if the file exists. A malicious name's age is taken on the day it was
+  reported (``first_seen``), a benign name's age on the day it was checked.
+  They are not forest features: the train rows with an age build the age
+  table (``ml/age_table.py``) that adjusts the forest's probability.
 
 The classes are very unbalanced (about 1 malicious to 43 benign), so the forest
 uses ``class_weight="balanced_subsample"``: each tree weighs the rare class up
@@ -42,12 +47,16 @@ from sklearn.ensemble import RandomForestClassifier
 from config import BASE_DIR, settings
 from dns_server.decision import load_domain_list
 from dns_server.domain import InvalidDomainError
-from ml.features import FEATURE_NAMES, FeatureExtractor
+from ml.age_table import MIN_PER_CLASS, AgeTable, bucket_labels
+from ml.domain_age import age_in_days
+from ml.features import FEATURE_NAMES, FeatureExtractor, lookup_domain
 from ml.predictor import BUNDLE_VERSION, load_bundle  # noqa: F401  (load_bundle is re-exported)
 from ml.prepare_data import BENIGN, MALICIOUS, TEST, TRAIN
 from ml.typosquat import DEFAULT_PER_TECHNIQUE, TECHNIQUES, SyntheticDomain, generate, split_brands, split_synthetic
 
 DEFAULT_DATASET = BASE_DIR / "data" / "processed" / "dataset.csv"
+DEFAULT_AGES = BASE_DIR / "data" / "processed" / "domain_age.csv"
+AGE_COLUMNS = ("domain", "created", "status", "checked_at")
 DEFAULT_TREES = 300
 DEFAULT_SYNTHETIC_TEST_FRACTION = 0.3
 REQUIRED_COLUMNS = ("host", "label", "split")
@@ -86,6 +95,72 @@ def load_dataset(path: Path) -> pd.DataFrame:
     if not set(frame["split"]).issubset({TRAIN, TEST}):
         raise ValueError(f"{path.name}: split must be '{TRAIN}' or '{TEST}'")
     return frame
+
+
+@dataclass(frozen=True)
+class AgeRecord:
+    """One row of ``domain_age.csv``: when a registered domain was created, and when we asked."""
+
+    created: datetime | None  # None: the registry had no date
+    checked_at: datetime
+
+
+def _parse_utc(value: str) -> datetime | None:
+    text = value.strip().replace("Z", "+00:00")
+    if not text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def load_ages(path: Path) -> dict[str, AgeRecord]:
+    """Read ``domain_age.csv`` (missing file = no ages). Bad rows are skipped."""
+    if not path.exists():
+        return {}
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    missing = [column for column in AGE_COLUMNS if column not in frame.columns]
+    if missing:
+        raise ValueError(f"{path.name}: missing column(s): {', '.join(missing)}")
+    ages: dict[str, AgeRecord] = {}
+    for domain, created, checked_at in zip(frame["domain"], frame["created"], frame["checked_at"]):
+        checked = _parse_utc(checked_at)
+        if checked is None:
+            continue
+        ages[domain.strip().lower()] = AgeRecord(_parse_utc(created), checked)
+    return ages
+
+
+def row_age_days(host: str, first_seen: str, ages: dict[str, AgeRecord]) -> float | None:
+    """Age of ``host``'s registered domain when it was seen, or None if unknown.
+
+    Malicious rows carry the report date (``first_seen``); benign rows have
+    none, so the day of the lookup is used. A creation date after that day
+    means the domain was registered again later: the age then is unknown.
+    """
+    domain = lookup_domain(host)
+    record = ages.get(domain) if domain is not None else None
+    if record is None or record.created is None:
+        return None
+    seen = _parse_utc(first_seen) if first_seen else None
+    return age_in_days(record.created, seen or record.checked_at)
+
+
+def fit_age_table(frame: pd.DataFrame, ages: dict[str, AgeRecord]) -> tuple[AgeTable | None, Counter[str]]:
+    """The age table from the train rows that have an age (test rows are never used)."""
+    train = frame[frame["split"] == TRAIN]
+    first_seen = train["first_seen"] if "first_seen" in train.columns else [""] * len(train)
+    by_label: dict[int, list[float]] = {BENIGN: [], MALICIOUS: []}
+    for host, seen, label in zip(train["host"], first_seen, train["label"]):
+        days = row_age_days(host, seen, ages)
+        if days is not None:
+            by_label[int(label)].append(days)
+    counts: Counter[str] = Counter()
+    counts["train rows with a known age (benign)"] = len(by_label[BENIGN])
+    counts["train rows with a known age (malicious)"] = len(by_label[MALICIOUS])
+    return AgeTable.fit(by_label[MALICIOUS], by_label[BENIGN]), counts
 
 
 def feature_matrix(extractor: FeatureExtractor, hosts: Sequence[str]) -> tuple[np.ndarray, list[int]]:
@@ -153,8 +228,9 @@ def train(
     synthetic_test_fraction: float = DEFAULT_SYNTHETIC_TEST_FRACTION,
     holdout_techniques: Sequence[str] = (),
     per_technique: int = DEFAULT_PER_TECHNIQUE,
+    ages_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Train, save and return the bundle."""
+    """Train, save and return the bundle. ``ages_path`` is an optional ``domain_age.csv``."""
     brands = load_domain_list(brands_path)
     whitelist = load_domain_list(whitelist_path)
     extractor = FeatureExtractor(brands, whitelist)
@@ -174,6 +250,8 @@ def train(
         synthetic_train, _ = config.generate_split(whitelist)
 
     features, target, counts = build_training_set(frame, synthetic_train, extractor)
+    age_table, age_counts = fit_age_table(frame, load_ages(ages_path) if ages_path is not None else {})
+    counts.update(age_counts)
     model = make_model(trees, seed)
     model.fit(features, target)
 
@@ -185,6 +263,7 @@ def train(
         # and a pickled __main__ class could not be loaded by ml.evaluate.
         "synthetic": asdict(config) if config is not None else None,
         "brands": tuple(sorted(brands)),
+        "age_table": age_table.to_dict() if age_table is not None else None,
         "train_counts": dict(counts),
         "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "sklearn_version": sklearn.__version__,
@@ -192,6 +271,20 @@ def train(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(bundle, out_path, compress=3)
     return bundle
+
+
+def print_age_table(table: AgeTable | None) -> None:
+    """Show how each age range moves the model's probability (shared with ml.evaluate)."""
+    if table is None:
+        print(
+            f"   Age table: not built (needs at least {MIN_PER_CLASS} train rows with a known age in each class; "
+            "run python -m ml.fetch_domain_age). The model scores names only."
+        )
+        return
+    print("   Age table (how much more often each age range is malicious; unknown age = no change):")
+    print("   age range   malicious  benign   ratio")
+    for label, m, b, ratio in zip(bucket_labels(), table.malicious_counts, table.benign_counts, table.ratios):
+        print(f"   {label:10}  {m:>9}  {b:>6}  {ratio:>6.2f}x")
 
 
 def synthetic_config(bundle: dict[str, Any]) -> SyntheticConfig | None:
@@ -205,6 +298,9 @@ def synthetic_config(bundle: dict[str, Any]) -> SyntheticConfig | None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m ml.train", description=__doc__.split("\n")[0])
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
+    parser.add_argument(
+        "--ages", type=Path, default=DEFAULT_AGES, help="domain ages from python -m ml.fetch_domain_age (optional)"
+    )
     parser.add_argument("--out", type=Path, default=settings.model_path)
     parser.add_argument("--trees", type=int, default=DEFAULT_TREES)
     parser.add_argument("--seed", type=int, default=42)
@@ -242,10 +338,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         synthetic_test_fraction=args.synthetic_test_fraction,
         holdout_techniques=args.holdout_technique,
         per_technique=args.per_technique,
+        ages_path=args.ages,
     )
     print("Training rows:")
     for key, value in bundle["train_counts"].items():
         print(f"  {key}: {value}")
+    print_age_table(AgeTable.from_dict(bundle["age_table"]))
     config = synthetic_config(bundle)
     if config is not None:
         print(f"Look-alike brands used in training: {', '.join(config.train_brands)}")

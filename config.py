@@ -62,6 +62,19 @@ def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> 
     return value
 
 
+_TRUE = frozenset({"1", "true", "yes", "on"})
+_FALSE = frozenset({"0", "false", "no", "off"})
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = _env_str(name, "true" if default else "false").lower()
+    if raw in _TRUE:
+        return True
+    if raw in _FALSE:
+        return False
+    raise ConfigError(f"{name} must be true or false, got {raw!r}")
+
+
 def _env_ip(name: str, default: str) -> IPAddress:
     raw = _env_str(name, default)
     try:
@@ -123,6 +136,11 @@ class Settings:
     model_path: Path  # trained model bundle written by ml/train.py
     lookalike_block: frozenset[str]  # look-alike techniques that block on their own
 
+    # Domain age (RDAP). Looked up in the background; an unknown age never blocks.
+    domain_age_lookup: bool  # False: never contact RDAP servers, the model scores names only
+    domain_age_timeout: float  # seconds per RDAP request
+    domain_age_cache_ttl: int  # seconds a known registration date is kept
+
     # Storage
     db_path: Path
     log_retention_days: int
@@ -166,6 +184,9 @@ def load_settings() -> Settings:
         model_threshold=_env_float("HISN_MODEL_THRESHOLD", 0.90, minimum=0.0, maximum=1.0),
         model_path=_env_path("HISN_MODEL_PATH", "ml/models/hisn_rf.joblib"),
         lookalike_block=_env_choices("HISN_LOOKALIKE_BLOCK", _DEFAULT_LOOKALIKE_BLOCK, LOOKALIKE_TECHNIQUES),
+        domain_age_lookup=_env_bool("HISN_DOMAIN_AGE_LOOKUP", True),
+        domain_age_timeout=_env_float("HISN_DOMAIN_AGE_TIMEOUT", 3.0, minimum=0.5, maximum=15.0),
+        domain_age_cache_ttl=_env_int("HISN_DOMAIN_AGE_CACHE_TTL", 604800, minimum=3600, maximum=2592000),
         db_path=_env_path("HISN_DB_PATH", "data/hisn.db"),
         log_retention_days=_env_int("HISN_LOG_RETENTION_DAYS", 30, minimum=1, maximum=365),
         verdict_cache_ttl=_env_int("HISN_VERDICT_CACHE_TTL", 3600, minimum=1, maximum=86400),

@@ -8,12 +8,17 @@ Order of checks (the first match wins):
 4. Look-alike rule: a name that imitates a protected brand is blocked on its
    own, for the techniques listed in ``block_techniques``.
 5. Model: blocked when the probability reaches ``threshold``, else allowed.
+   The domain age is passed to the model when it is already known; the age
+   lookup itself runs in the background and never delays the answer.
 6. Default: allow (also when the rule or the model is missing or fails).
 
 Only steps 4 and 5 write to the cache, so a list edit always wins over a
-cached verdict. A failing rule or model never blocks anything: it is logged
-and the name is allowed ("fail open"), because a broken model must not take
-the whole home network offline.
+cached verdict. A model verdict made while the age lookup is still running is
+not cached, so the next query for that name is scored with the age.
+
+A failing rule, model or age lookup never blocks anything: it is logged and
+the name is allowed (or scored without the age), because a broken component
+must not take the whole home network offline.
 
 The engine takes already-validated input, so callers must run
 :func:`dns_server.domain.normalize_domain` first.
@@ -62,7 +67,17 @@ class LookalikeRule(Protocol):
 class Scorer(Protocol):
     """What the engine needs from ``ml.predictor.Predictor``."""
 
-    def probability(self, host: str) -> float: ...
+    def probability(self, host: str, age_days: float | None = None) -> float: ...
+
+
+class AgeSource(Protocol):
+    """What the engine needs from ``ml.domain_age.DomainAgeService``.
+
+    ``lookup`` must not block: it returns an object with ``days`` (float or
+    None) and ``final`` (False while a background lookup is still running).
+    """
+
+    def lookup(self, host: str) -> object: ...
 
 
 @dataclass(frozen=True)
@@ -103,7 +118,11 @@ def load_domain_list(path: Path) -> frozenset[str]:
 
 
 class DecisionEngine:
-    """Lists, cache, look-alike rule, model. Thread-safe (nothing here changes after start)."""
+    """Lists, cache, look-alike rule, model (+ domain age).
+
+    Thread-safe: nothing here changes after start, and the cache and the age
+    source lock internally.
+    """
 
     def __init__(
         self,
@@ -115,6 +134,7 @@ class DecisionEngine:
         block_techniques: Collection[str] = (),
         scorer: Scorer | None = None,
         threshold: float = 0.9,
+        ages: AgeSource | None = None,
     ) -> None:
         if not 0.0 <= threshold <= 1.0:
             raise ValueError("threshold must be between 0 and 1")
@@ -125,6 +145,7 @@ class DecisionEngine:
         self._block_techniques = frozenset(block_techniques)
         self._scorer = scorer
         self._threshold = threshold
+        self._ages = ages
 
     @classmethod
     def from_files(
@@ -160,10 +181,13 @@ class DecisionEngine:
             if cached is not None:
                 return Decision(cached, Reason.CACHE)
 
-        decision = self._lookalike_decision(domain) or self._model_decision(domain)
+        cacheable = True
+        decision = self._lookalike_decision(domain)
+        if decision is None:
+            decision, cacheable = self._model_decision(domain)
         if decision is None:
             return Decision(Verdict.ALLOW, Reason.DEFAULT)
-        if self._cache is not None:
+        if cacheable and self._cache is not None:
             self._cache.put(domain, decision.verdict)
         return decision
 
@@ -179,13 +203,27 @@ class DecisionEngine:
             return None
         return Decision(Verdict.BLOCK, Reason.LOOKALIKE, str(getattr(match, "brand", "")) or None)
 
-    def _model_decision(self, domain: str) -> Decision | None:
+    def _model_decision(self, domain: str) -> tuple[Decision | None, bool]:
+        """The model's decision and whether it may be cached."""
         if self._scorer is None:
-            return None
+            return None, False
+        age_days, final = self._age(domain)
         try:
-            probability = self._scorer.probability(domain)
+            probability = self._scorer.probability(domain, age_days=age_days)
         except Exception:  # fail open, see the module docstring
             logger.exception("model failed for %s; allowing", domain)
-            return None
+            return None, False
         verdict = Verdict.BLOCK if probability >= self._threshold else Verdict.ALLOW
-        return Decision(verdict, Reason.MODEL, f"{probability:.2f}")
+        return Decision(verdict, Reason.MODEL, f"{probability:.2f}"), final
+
+    def _age(self, domain: str) -> tuple[float | None, bool]:
+        """(age in days or None, whether that answer is final). Never raises."""
+        if self._ages is None:
+            return None, True
+        try:
+            result = self._ages.lookup(domain)
+            days = getattr(result, "days", None)
+            return (float(days) if days is not None else None), bool(getattr(result, "final", True))
+        except Exception:  # fail open: an unknown age simply means "score the name alone"
+            logger.exception("domain age lookup failed for %s; scoring without it", domain)
+            return None, True

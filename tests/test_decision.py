@@ -164,9 +164,11 @@ class FixedScorer:
         self.value = probability
         self.error = error
         self.calls = 0
+        self.ages: list[float | None] = []
 
-    def probability(self, host: str) -> float:
+    def probability(self, host: str, age_days: float | None = None) -> float:
         self.calls += 1
+        self.ages.append(age_days)
         if self.error is not None:
             raise self.error
         return self.value
@@ -268,3 +270,63 @@ def test_empty_technique_set_turns_the_rule_off() -> None:
 def test_threshold_must_be_a_probability() -> None:
     with pytest.raises(ValueError):
         DecisionEngine(frozenset(), frozenset(), threshold=1.5)
+
+
+# ----- domain age (Phase 6) -----
+
+
+class FakeAges:
+    """Stands in for DomainAgeService: returns a fixed answer, or raises."""
+
+    def __init__(self, days: float | None = None, final: bool = True, error: Exception | None = None) -> None:
+        self.days = days
+        self.final = final
+        self.error = error
+        self.calls = 0
+
+    def lookup(self, host: str) -> FakeAges:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self
+
+
+def _age_engine(ages: FakeAges, scorer: FixedScorer, cache: TTLCache[Verdict] | None = None) -> DecisionEngine:
+    return DecisionEngine(frozenset({"absher.sa"}), frozenset({"evil.example"}), cache, scorer=scorer, ages=ages)
+
+
+def test_known_age_is_passed_to_the_model() -> None:
+    scorer = FixedScorer(0.2)
+    _age_engine(FakeAges(days=5.0), scorer).decide("x7k2q9zv4m.xyz")
+    assert scorer.ages == [5.0]
+
+
+def test_pending_age_scores_the_name_alone_and_is_not_cached() -> None:
+    cache: TTLCache[Verdict] = TTLCache(3600)
+    scorer = FixedScorer(0.95)
+    decision = _age_engine(FakeAges(final=False), scorer, cache).decide("x7k2q9zv4m.xyz")
+    assert decision.reason is Reason.MODEL and decision.blocked  # the answer never waits for the lookup
+    assert scorer.ages == [None]
+    assert len(cache) == 0  # so the next query is scored with the age
+
+
+def test_final_unknown_age_is_cached() -> None:
+    cache: TTLCache[Verdict] = TTLCache(3600)
+    _age_engine(FakeAges(days=None, final=True), FixedScorer(0.1), cache).decide("x7k2q9zv4m.xyz")
+    assert cache.get("x7k2q9zv4m.xyz") is Verdict.ALLOW
+
+
+def test_broken_age_source_fails_open() -> None:
+    scorer = FixedScorer(0.1)
+    decision = _age_engine(FakeAges(error=RuntimeError("broken")), scorer).decide("x7k2q9zv4m.xyz")
+    assert decision.reason is Reason.MODEL
+    assert decision.verdict is Verdict.ALLOW
+    assert scorer.ages == [None]
+
+
+def test_age_is_not_looked_up_for_list_or_rule_decisions() -> None:
+    ages = FakeAges(days=1.0)
+    engine = _age_engine(ages, FixedScorer(0.1))
+    engine.decide("www.absher.sa")
+    engine.decide("evil.example")
+    assert ages.calls == 0

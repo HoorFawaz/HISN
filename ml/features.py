@@ -2,8 +2,10 @@
 
 Everything here is computed from the domain name alone: no network access and
 no lookups, so one call takes well under a millisecond (the DNS decision has to
-be fast). The same code runs when the dataset is built, when the model is
-trained and when the DNS server asks for a verdict, so the three always agree.
+be fast). The domain age is not a feature here: it is applied on top of the
+model's probability (``ml/age_table.py``). The same code runs when the dataset
+is built, when the model is trained and when the DNS server asks for a
+verdict, so the three always agree.
 
 Public parts of a name are split with the bundled Public Suffix List
 (``tldextract``), configured so that it never downloads anything:
@@ -60,6 +62,13 @@ _LEET = str.maketrans("013457", "oleast")
 # The offline extractor: no suffix-list download, no disk cache.
 _EXTRACT = tldextract.TLDExtract(
     suffix_list_urls=(), cache_dir=None, include_psl_private_domains=True
+)
+
+
+# The same without the private (platform) part of the list: "duckdns.org" is
+# then a normal registered domain, as the registry sees it.
+_EXTRACT_ICANN = tldextract.TLDExtract(
+    suffix_list_urls=(), cache_dir=None, include_psl_private_domains=False
 )
 
 
@@ -280,6 +289,23 @@ def registered_domain(host: str) -> str:
     if not main:
         return suffix  # the host is itself a public suffix such as "co.uk"
     return f"{main}.{suffix}" if suffix else main
+
+
+def lookup_domain(host: str) -> str | None:
+    """The domain a registry knows for ``host`` (for domain-age lookups), or None.
+
+    None when the host lives on a shared platform (``x.duckdns.org``,
+    ``pub-1234.r2.dev``): its owner registered nothing, so the registry only
+    knows the platform, whose age says nothing about this host. Also None when
+    the host is itself a public suffix.
+    """
+    parts = _EXTRACT_ICANN(host)
+    if not parts.domain or not parts.suffix:
+        return None
+    domain = f"{parts.domain}.{parts.suffix}"
+    if host != domain and _EXTRACT(host).is_private:
+        return None  # a customer of the platform, not the platform's own site
+    return domain
 
 
 def concentration_key(host: str) -> str:

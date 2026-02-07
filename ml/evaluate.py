@@ -4,10 +4,11 @@ Run from the project root after ``python -m ml.train``::
 
     python -m ml.evaluate
 
-Three separate results, because they answer different questions:
+Four separate results, because they answer different questions:
 
 1. **Temporal test split** (``split == "test"`` in ``dataset.csv``): the newest
-   phishing names, which the model never saw. Precision, recall and the
+   phishing names, which the model never saw, scored on the name alone (as the
+   DNS server does before a domain's age is known). Precision, recall and the
    confusion matrix at the blocking threshold, plus a small threshold table.
    Accuracy is not reported: with about 1 malicious name per 43 benign ones,
    "allow everything" already scores over 97%.
@@ -17,6 +18,9 @@ Three separate results, because they answer different questions:
 3. **Look-alike rule** (``ml.lookalike``): the same look-alikes, plus how many
    benign test names the rule would wrongly flag. The rule learns nothing, so
    it is scored on all brands.
+4. **Domain age**: how old the domains of each class are (every row with a
+   known age), the age table learned in training, and the test names with a
+   known age scored with and without it, to show what the age adds.
 
 Every figure depends on labels nobody reviewed (see ``docs/limitations.md``).
 """
@@ -36,10 +40,21 @@ from sklearn.metrics import average_precision_score, confusion_matrix, precision
 
 from config import settings
 from dns_server.decision import load_domain_list
+from ml.age_table import AgeTable
 from ml.features import FeatureExtractor
 from ml.lookalike import LookalikeChecker
 from ml.prepare_data import BENIGN, MALICIOUS, TEST
-from ml.train import DEFAULT_DATASET, feature_matrix, load_bundle, load_dataset, synthetic_config
+from ml.train import (
+    DEFAULT_AGES,
+    DEFAULT_DATASET,
+    feature_matrix,
+    load_ages,
+    load_bundle,
+    load_dataset,
+    print_age_table,
+    row_age_days,
+    synthetic_config,
+)
 from ml.typosquat import SyntheticDomain, generate
 
 THRESHOLDS: tuple[float, ...] = (0.5, 0.6, 0.7, 0.8, 0.9, 0.95)
@@ -107,6 +122,7 @@ def evaluate(
     brands_path: Path,
     whitelist_path: Path,
     threshold: float,
+    ages_path: Path | None = None,
 ) -> dict[str, Any]:
     """Compute every result. Returns plain data so tests and the CLI share it."""
     bundle = load_bundle(model_path)
@@ -116,11 +132,18 @@ def evaluate(
     extractor = FeatureExtractor(brands, whitelist)
     checker = LookalikeChecker(brands, whitelist)
 
-    def probabilities(hosts: Sequence[str]) -> tuple[np.ndarray, list[int]]:
+    age_table = AgeTable.from_dict(bundle.get("age_table"))
+
+    def probabilities(
+        hosts: Sequence[str], age_days: Sequence[float | None] | None = None
+    ) -> tuple[np.ndarray, list[int]]:
         features, kept = feature_matrix(extractor, hosts)
         if not kept:
             return np.zeros(0), kept
-        return model.predict_proba(features)[:, list(model.classes_).index(MALICIOUS)], kept
+        scores = model.predict_proba(features)[:, list(model.classes_).index(MALICIOUS)]
+        if age_days is not None and age_table is not None:
+            scores = np.asarray([age_table.adjust(float(p), age_days[i]) for p, i in zip(scores, kept)])
+        return scores, kept
 
     # 1. temporal test split
     frame = load_dataset(dataset_path)
@@ -167,7 +190,46 @@ def evaluate(
             flagged.append((host, match.brand, match.technique))
     result["rule_false_positives"] = flagged
     result["rule_benign_total"] = len(benign_hosts)
+
+    # 4. the test names with a known age, with and without it
+    ages = load_ages(ages_path) if ages_path is not None else {}
+    first_seen = test["first_seen"] if "first_seen" in test.columns else [""] * len(test)
+    test_ages = [row_age_days(h, f, ages) for h, f in zip(test_hosts, first_seen)]
+    aged = [i for i, age in enumerate(test_ages) if age is not None]
+    aged_target = test["label"].to_numpy()[aged]
+    if aged and len(set(aged_target)) == 2:
+        aged_hosts = [test_hosts[i] for i in aged]
+        with_age, kept_with = probabilities(aged_hosts, [test_ages[i] for i in aged])
+        without_age, kept_without = probabilities(aged_hosts)
+        result["age"] = {
+            "counts": {"benign": int((aged_target == BENIGN).sum()), "malicious": int((aged_target == MALICIOUS).sum())},
+            "with_age": binary_scores(aged_target[kept_with], with_age, threshold),
+            "without_age": binary_scores(aged_target[kept_without], without_age, threshold),
+        }
+    else:
+        result["age"] = None
+    result["age_known_test_rows"] = len(aged)
+    result["age_table"] = age_table
+    first_seen_all = frame["first_seen"] if "first_seen" in frame.columns else [""] * len(frame)
+    all_ages = [row_age_days(h, f, ages) for h, f in zip(frame["host"], first_seen_all)]
+    result["age_profile"] = {
+        label: age_profile([a for a, y in zip(all_ages, frame["label"]) if y == label and a is not None])
+        for label in (BENIGN, MALICIOUS)
+    }
     return result
+
+
+def age_profile(days: Sequence[float]) -> dict[str, float] | None:
+    """Count, median age and share of young domains, or None without data."""
+    if not days:
+        return None
+    values = np.asarray(days, dtype=np.float64)
+    return {
+        "count": float(len(values)),
+        "median_days": float(np.median(values)),
+        "under_30_days": float((values < 30).mean()),
+        "under_1_year": float((values < 365).mean()),
+    }
 
 
 # ---------------------------------------------------------------- output
@@ -191,7 +253,7 @@ def _print_recall(title: str, table: RecallTable) -> None:
 def report(result: dict[str, Any], threshold: float) -> None:
     counts = result["test_counts"]
     scores: BinaryScores = result["at_threshold"]
-    print(f"1. Temporal test split: {counts['malicious']} malicious, {counts['benign']} benign")
+    print(f"1. Temporal test split (name only): {counts['malicious']} malicious, {counts['benign']} benign")
     print(f"   Threshold {threshold:.2f}: precision {scores.precision:.3f} | recall {scores.recall:.3f} | F1 {scores.f1:.3f}")
     print("   Confusion matrix (rows = real, columns = predicted):")
     print("                  benign  malicious")
@@ -219,12 +281,43 @@ def report(result: dict[str, Any], threshold: float) -> None:
     for host, brand, technique in flagged[:10]:
         print(f"     {host} (looks like {brand}, {technique})")
     print()
+
+    profile = result.get("age_profile") or {}
+    if any(profile.values()):
+        print("4. Domain age (every row with a known age, train and test):")
+        print("   class      domains  median age  younger than 30 days  younger than 1 year")
+        for label, name in ((MALICIOUS, "malicious"), (BENIGN, "benign")):
+            row = profile.get(label)
+            if row is None:
+                print(f"   {name:9}  {0:>7}")
+                continue
+            print(
+                f"   {name:9}  {int(row['count']):>7}  {row['median_days']:>7.0f} d  "
+                f"{row['under_30_days']:>20.1%}  {row['under_1_year']:>19.1%}"
+            )
+    print_age_table(result.get("age_table"))
+    age = result["age"]
+    if age is None:
+        print(
+            f"4. Domain age: skipped ({result['age_known_test_rows']} test names with a known age; "
+            "both classes are needed. Run python -m ml.fetch_domain_age, then retrain.)"
+        )
+    else:
+        counts = age["counts"]
+        print(f"   Test names with a known age ({counts['malicious']} malicious, {counts['benign']} benign):")
+        for label, scores in (("with age", age["with_age"]), ("name only", age["without_age"])):
+            print(
+                f"   {label:9}: precision {scores.precision:.3f} | recall {scores.recall:.3f} | "
+                f"false positives {scores.false_positive} | missed {scores.false_negative}"
+            )
+    print()
     print(LIMITATIONS_NOTE)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m ml.evaluate", description=__doc__.split("\n")[0])
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
+    parser.add_argument("--ages", type=Path, default=DEFAULT_AGES)
     parser.add_argument("--model", type=Path, default=settings.model_path)
     parser.add_argument("--threshold", type=float, default=settings.model_threshold)
     args = parser.parse_args(argv)
@@ -233,7 +326,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not path.exists():
             print(f"{path} not found. Run {hint} first.", file=sys.stderr)
             return 1
-    result = evaluate(args.dataset, args.model, settings.brands_path, settings.whitelist_path, args.threshold)
+    result = evaluate(
+        args.dataset, args.model, settings.brands_path, settings.whitelist_path, args.threshold, args.ages
+    )
     report(result, args.threshold)
     return 0
 

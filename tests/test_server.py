@@ -287,7 +287,7 @@ class _FixedScorer:
     def __init__(self, probability: float) -> None:
         self.value = probability
 
-    def probability(self, host: str) -> float:
+    def probability(self, host: str, age_days: float | None = None) -> float:
         return self.value
 
 

@@ -156,3 +156,43 @@ def test_command_lines_explain_missing_files(tmp_path: Path, capsys: pytest.Capt
     assert train_module.main(["--dataset", str(tmp_path / "none.csv")]) == 1
     assert evaluate_module.main(["--dataset", str(tmp_path / "none.csv"), "--model", str(tmp_path / "m")]) == 1
     assert "prepare_data" in capsys.readouterr().err
+
+
+def write_ages(files: dict[str, Path]) -> Path:
+    """Ages for every other domain: benign ones are years old, malicious ones a week old."""
+    frame = load_dataset(files["dataset"])
+    path = files["dataset"].parent / "domain_age.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["domain", "created", "status", "checked_at"])
+        for index, (host, label) in enumerate(zip(frame["host"], frame["label"])):
+            if index % 2:
+                continue
+            created = "2025-12-25T00:00:00+00:00" if label == 1 else "2010-03-01T00:00:00+00:00"
+            writer.writerow([host, created, "found", "2026-10-17T00:00:00+00:00"])
+    return path
+
+
+def test_training_and_evaluation_with_domain_ages(files: dict[str, Path]) -> None:
+    ages_path = write_ages(files)
+    bundle = run_train(files, ages_path=ages_path)
+    counts = bundle["train_counts"]
+    assert counts["train rows with a known age (benign)"] >= 30
+    assert counts["train rows with a known age (malicious)"] >= 30
+    assert bundle["age_table"] is not None
+    result = evaluate(files["dataset"], files["model"], files["brands"], files["whitelist"], 0.5, ages_path)
+    age = result["age"]
+    assert age is not None
+    assert age["counts"]["benign"] > 0 and age["counts"]["malicious"] > 0
+    assert age["with_age"].true_positive + age["with_age"].false_negative == age["counts"]["malicious"]
+    profile = result["age_profile"]
+    assert profile[1]["under_30_days"] == 1.0  # every malicious age in write_ages is 7 days at report time
+    assert profile[0]["under_30_days"] == 0.0 and profile[0]["median_days"] > 5000
+
+
+def test_training_without_ages_reports_none(files: dict[str, Path]) -> None:
+    bundle = run_train(files)
+    assert bundle["train_counts"]["train rows with a known age (malicious)"] == 0
+    assert bundle["age_table"] is None
+    result = evaluate(files["dataset"], files["model"], files["brands"], files["whitelist"], 0.5)
+    assert result["age"] is None

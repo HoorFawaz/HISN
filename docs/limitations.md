@@ -58,8 +58,41 @@ Every result figure HISN reports depends on these points. Quote them next to any
   a wrong block, stays as it was until the entry expires or the server restarts. The whitelist and
   blacklist always win over the cache.
 - **Speed.** The first query for a new name runs the features and the forest (some milliseconds);
-  repeats come from the cache.
+  repeats come from the cache. The domain-age lookup never adds to this (it runs in the background).
 - **The model is loaded at startup.** After retraining, restart the server.
+
+## Domain age (Phase 6)
+
+- **Few training ages.** Ages come from `ml.fetch_domain_age`, one registry request per domain, so
+  only a sample of the training names has one. Many old phishing domains were deleted after being
+  reported (no record any more) or registered again (the date is after the report and is ignored),
+  so the malicious side has fewer ages than the benign side.
+- **The age table is an approximation.** It multiplies the forest's odds by how much more often an
+  age range is malicious, which assumes the age tells something the name does not. Its ratios come
+  from a few hundred domains per class and are capped at 10x, so treat them as rough. The forest's
+  probabilities are not calibrated either (it weighs the rare class up), so the adjusted value is a
+  score for ranking and thresholds, not an exact probability.
+- **Benign ages are taken today, malicious ages on the report day.** Benign names have no date, so
+  their age is measured when they were looked up. Tranco names are popular sites, which are usually
+  old; a brand-new legitimate site (a new shop, a new government service) looks more like phishing
+  to the model than an old one.
+- **Not every suffix has RDAP.** Suffixes without an RDAP server in the IANA list (some country
+  codes, possibly `.sa`) always have an unknown age, so for them the model judges the name alone.
+- **Shared platforms have no age.** Phishing on free hosting (`x.netlify.app`, `x.pages.dev`,
+  `x.duckdns.org`) is common, but the registry only knows the platform, so these hosts always have an
+  unknown age and the model judges the name alone.
+- **Some registries fail TLS checks.** A registry whose certificate chain cannot be verified is never
+  trusted (checks are never turned off); its domains get an unknown age. The certifi root bundle is
+  added to the system store to avoid the common Windows case of missing root certificates.
+- **The first query is scored without the age.** The lookup runs in the background; until it
+  finishes (and whenever it fails), the name is judged on its own.
+- **Privacy.** Each lookup tells the registry of the suffix (for `.com`, Verisign) which registered
+  domain someone on the network is visiting, plus the home IP address. Only the registered domain
+  is sent, never the full host or the device. `HISN_DOMAIN_AGE_LOOKUP=false` turns lookups off.
+- **Ages are cached in memory only.** A restart forgets them, so every domain is looked up again.
+  Registries may rate-limit a busy network; a refused lookup simply means "age unknown" for an hour.
+- **The age can be faked only by waiting.** Attackers can register domains early and use them later
+  ("aged domains"); the age then gives no warning.
 
 ## Tiny whitelist
 
