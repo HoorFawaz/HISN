@@ -4,7 +4,7 @@ Network-level protection against phishing and fake websites. HISN acts as the DN
 server of a home network: every domain request is checked, and dangerous domains
 are answered with the address of a block page.
 
-> Status: Phase 7 (DNS server with lists, verdict cache and decision log; dataset, domain features, look-alike handling, model training and evaluation; the look-alike rule and the model decide unknown names in the server; the model also uses the domain age when it is known; DNS-over-HTTPS servers get NXDOMAIN so browsers cannot bypass HISN). See the project brief for the full roadmap.
+> Status: Phase 8 (DNS server with lists, verdict cache and decision log; dataset, domain features, look-alike handling, model training and evaluation; the look-alike rule and the model decide unknown names in the server; the model also uses the domain age when it is known; DNS-over-HTTPS servers get NXDOMAIN so browsers cannot bypass HISN; a block page explains why a site was blocked). See the project brief for the full roadmap.
 
 ## Setup
 
@@ -114,6 +114,42 @@ python -c "import sys; from dnslib import DNSRecord; print(DNSRecord.parse(DNSRe
 
 A DoH server set up by its IP address, a browser where the user forced DoH on, and DNS-over-TLS
 (port 853) are not stopped by this; see [docs/limitations.md](docs/limitations.md).
+
+## Block page (Phase 8)
+
+A blocked name resolves to `HISN_BLOCK_PAGE_IP`, so the browser lands on the block page instead of
+the real site. Run it in a second terminal, next to the DNS server:
+
+```bash
+python -m web.block_page.app
+```
+
+It listens on `HISN_BLOCK_PAGE_IP` port `HISN_BLOCK_PAGE_PORT` (default `127.0.0.1:80`). Every path
+shows the same page, in Arabic and English: "This site was blocked as suspected fraud", the blocked
+name, a simple reason, advice, and a "Back to safety" button (goes to `HISN_BLOCK_PAGE_SAFE_URL`,
+default `https://www.google.com/`).
+
+The reason comes from the decision log (`data/hisn.db`): reported fraud site (blacklist), impersonates a
+known organization (look-alike rule), or resembles known fraud names (model). A name that is not
+in the log (purged or deleted) gets a general "classified as unsafe" line.
+
+Check it with a browser at `http://127.0.0.1/` (no name is shown when the page is opened by its
+address), or pretend to be a blocked site:
+
+```bash
+curl -H "Host: absher-sa.com" http://127.0.0.1/login
+```
+
+On Windows PowerShell use `curl.exe` (plain `curl` is a different command there). If port 80 is
+taken, set `HISN_BLOCK_PAGE_PORT` to a free port such as 8081; real browsers only use port 80, so that
+is for testing.
+
+The Arabic and English text uses IBM Plex Sans Arabic, bundled in `web/block_page/static/fonts/`
+(SIL Open Font License, `OFL.txt` next to it), so the page needs no internet.
+
+The page runs no script, is never framed or cached, escapes the host name, and never reads what a
+phishing form posts to it. It serves plain HTTP only: an `https://` link shows a browser error instead
+of the page. The plan for that is in [docs/https_block_page.md](docs/https_block_page.md).
 
 ## Logs and privacy
 

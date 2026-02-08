@@ -20,3 +20,7 @@ riyadbank.com
 iam.gov.sa
 my.gov.sa
 ta.sdaia.gov.sa
+# Saudi universities and schools. Only Saudi educational institutions can register
+# under edu.sa, so the whole zone is allowed (added at the project owner's request on
+# 2026-10-18). Look-alikes outside it (ksu-edu-sa.com) are still checked.
+edu.sa

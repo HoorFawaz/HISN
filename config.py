@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -83,6 +84,15 @@ def _env_ip(name: str, default: str) -> IPAddress:
         raise ConfigError(f"{name} must be an IP address, got {raw!r}") from exc
 
 
+def _env_https_url(name: str, default: str) -> str:
+    """An absolute https:// URL (it is put in a link on the block page)."""
+    raw = _env_str(name, default)
+    parts = urlsplit(raw)
+    if parts.scheme != "https" or not parts.netloc or any(c in raw for c in " \"'<>"):
+        raise ConfigError(f"{name} must be an https:// URL, got {raw!r}")
+    return raw
+
+
 def _env_networks(name: str, default: str) -> tuple[IPNetwork, ...]:
     """Parse a comma-separated list of CIDR networks."""
     raw = _env_str(name, default)
@@ -130,6 +140,8 @@ class Settings:
     upstream_timeout: float  # seconds; every upstream call must time out
     allowed_networks: tuple[IPNetwork, ...]  # only these clients get answers
     block_page_ip: IPAddress  # returned instead of the real IP for blocked domains
+    block_page_port: int  # HTTP port of the block page (browsers use 80)
+    block_page_safe_url: str  # where the "Back to safety" button goes
 
     # Model decision threshold: probability above which a domain is blocked.
     model_threshold: float
@@ -184,6 +196,8 @@ def load_settings() -> Settings:
         upstream_timeout=_env_float("HISN_UPSTREAM_TIMEOUT", 2.0, minimum=0.1, maximum=10.0),
         allowed_networks=_env_networks("HISN_ALLOWED_NETWORKS", _DEFAULT_ALLOWED_NETWORKS),
         block_page_ip=_env_ip("HISN_BLOCK_PAGE_IP", "127.0.0.1"),
+        block_page_port=_env_int("HISN_BLOCK_PAGE_PORT", 80, minimum=1, maximum=65535),
+        block_page_safe_url=_env_https_url("HISN_BLOCK_PAGE_SAFE_URL", "https://www.google.com/"),
         model_threshold=_env_float("HISN_MODEL_THRESHOLD", 0.90, minimum=0.0, maximum=1.0),
         model_path=_env_path("HISN_MODEL_PATH", "ml/models/hisn_rf.joblib"),
         lookalike_block=_env_choices("HISN_LOOKALIKE_BLOCK", _DEFAULT_LOOKALIKE_BLOCK, LOOKALIKE_TECHNIQUES),

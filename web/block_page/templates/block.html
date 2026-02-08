@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>تم حجب الموقع | Site blocked</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='block.css') }}">
+</head>
+<body>
+  <main class="card">
+    <div class="shield" aria-hidden="true">!</div>
+
+    <h1>تم حجب هذا الموقع للاشتباه بالاحتيال</h1>
+    <p class="en" lang="en" dir="ltr">This site was blocked as suspected fraud</p>
+
+    {% if domain %}
+    <p class="domain" dir="ltr">{{ domain }}</p>
+    {% endif %}
+
+    <section>
+      <h2>السبب <span class="en" lang="en">Reason</span></h2>
+      <p>{{ reason.arabic }}</p>
+      <p class="en" lang="en" dir="ltr">{{ reason.english }}</p>
+    </section>
+
+    <section>
+      <h2>ماذا تفعل؟ <span class="en" lang="en">What to do</span></h2>
+      <ul>
+        <li>لا تُدخل كلمة مرور أو بيانات بطاقة أو رمز تحقق في هذا الموقع.
+          <span class="en" lang="en" dir="ltr">Do not enter a password, card details, or a verification code on this site.</span></li>
+        <li>لا تتابع استخدام هذا الموقع. وإذا كنت بحاجة إلى الخدمة، فافتحها من التطبيق الرسمي أو اكتب عنوانها بنفسك.
+          <span class="en" lang="en" dir="ltr">Do not continue using this site. If you need the service, open it from its official app or type its address yourself.</span></li>
+        <li>إذا وصلك الرابط عبر رسالة أو إعلان، فالأرجح أنه احتيال؛ لا تتفاعل معه واحذفه.
+          <span class="en" lang="en" dir="ltr">If the link reached you through a message or an ad, it is most likely fraud; do not engage with it, and delete it.</span></li>
+        <li>إذا أدخلت بياناتك بالفعل، فغيّر كلمة المرور فورًا، وتواصل مع الجهة التي ينتحلها الموقع عبر قنواتها الرسمية. وفي حال إدخال بيانات بطاقة بنكية، تواصل مع البنك لإيقاف البطاقة.
+          <span class="en" lang="en" dir="ltr">If you have already entered your details, change your password immediately and contact the organization the site is impersonating through its official channels. If you entered bank card details, contact your bank to block the card.</span></li>
+        <li>إذا كنت تعتقد أن الحجب تم عن طريق الخطأ، فتواصل مع المسؤول عن «حصن» في المنزل.
+          <span class="en" lang="en" dir="ltr">If you believe the block was made in error, contact the person who manages HISN at home.</span></li>
+      </ul>
+    </section>
+
+    <a class="button" href="{{ safe_url }}" rel="noreferrer">العودة إلى الأمان <span lang="en">Back to safety</span></a>
+
+    <p class="footer">حصن HISN</p>
+  </main>
+</body>
+</html>

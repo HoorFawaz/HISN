@@ -110,10 +110,28 @@ Every result figure HISN reports depends on these points. Quote them next to any
 - **Private Relay notice.** Blocking `mask.icloud.com` turns iCloud Private Relay off on this network
   for every Apple device, and the user sees a notice explaining why.
 
+## Block page (Phase 8)
+
+- **HTTPS links show a browser error, not the page.** The block page cannot present a valid
+  certificate for a blocked name, so `https://` links end in "site can't be reached". The phishing
+  site still does not load. A local CA for the demo device is planned in `docs/https_block_page.md`.
+- **Apps are not browsers.** An app that opens a blocked name just fails to connect; only web
+  browsers show the page.
+- **The reason can be general.** It is read from the decision log, so after the log is purged or
+  deleted, or for a name not in it, the page shows a general reason.
+- **Development web server.** The page runs on Werkzeug's built-in server, which is fine for a home
+  network and the demo, not for exposure to the internet. Keep `HISN_BLOCK_PAGE_IP` on the local
+  network.
+
 ## Tiny whitelist
 
 The whitelist holds a handful of official domains. Every brand added to `brands.txt` needs its
 official domain confirmed from the organisation's own pages first (see `docs/brand_list_proposal.md`).
+
+`edu.sa` is allowed as a whole zone (Saudi universities and schools), because only Saudi educational
+institutions can register under it. A compromised site inside it is not blocked; HISN targets
+impersonation, and an official domain that was broken into is out of its scope (the same holds for
+every whitelisted domain).
 
 ## Optional visual check (Phase 11, not built)
 

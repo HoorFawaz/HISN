@@ -130,7 +130,9 @@ class Database:
                     "INSERT INTO blocked_domains (domain, first_seen, last_seen, hits, reason) "
                     "VALUES (?, ?, ?, 1, ?) "
                     "ON CONFLICT(domain) DO UPDATE SET "
-                    "last_seen = excluded.last_seen, hits = hits + 1, reason = excluded.reason",
+                    "last_seen = excluded.last_seen, hits = hits + 1, "
+                    # A cache hit says nothing about why; keep the reason of the real decision.
+                    "reason = CASE WHEN excluded.reason = 'cache' THEN reason ELSE excluded.reason END",
                     (domain, moment, moment, reason),
                 )
 
@@ -160,7 +162,7 @@ class Database:
             self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self._conn.execute("VACUUM")
 
-    # ----- reading (used by the dashboard in a later phase) -----
+    # ----- reading (block page now, dashboard in a later phase) -----
 
     def recent_requests(self, limit: int = 100) -> list[RequestRow]:
         with self._lock:
@@ -179,6 +181,14 @@ class Database:
                 (_clamp(limit),),
             ).fetchall()
         return [BlockedRow(*row) for row in rows]
+
+    def blocked_reason(self, domain: str) -> str | None:
+        """Reason of the last block of ``domain`` (used by the block page), or None."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT reason FROM blocked_domains WHERE domain = ?", (domain,)
+            ).fetchone()
+        return row[0] if row else None
 
     def daily_stats(self, days: int = 7) -> list[DayStats]:
         """Totals for the most recent ``days`` days that have data, newest first."""

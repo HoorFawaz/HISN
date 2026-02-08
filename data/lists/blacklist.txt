@@ -6,3 +6,7 @@
 #
 # Demo entry from the project brief: a fake lookalike of the official Absher domain.
 absher-sa.com
+# Reported by the project owner on 2026-10-18: uses the Absher name but is not the
+# official absher.sa. The look-alike rule sees it only as "contains", which does not
+# block by default, so it is listed here.
+abshergov.sa

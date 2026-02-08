@@ -114,6 +114,9 @@ def test_engine_loads_the_shipped_lists() -> None:
     engine = DecisionEngine.from_files(settings.whitelist_path, settings.blacklist_path)
     assert engine.decide("absher.sa").verdict is Verdict.ALLOW
     assert engine.decide("absher-sa.com").blocked
+    assert engine.decide("www.abshergov.sa").reason is Reason.BLACKLIST
+    assert engine.decide("lms.ksu.edu.sa").reason is Reason.WHITELIST
+    assert engine.decide("edu.sa.fake-login.com").reason is not Reason.WHITELIST
 
 
 def _engine_with_cache() -> tuple[DecisionEngine, TTLCache[Verdict]]:
