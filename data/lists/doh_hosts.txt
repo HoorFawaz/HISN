@@ -1,9 +1,33 @@
-# Hostnames of well-known DNS-over-HTTPS servers. Phase 7 answers NXDOMAIN for these
-# so browsers fall back to the router's DNS. One hostname per line, lowercase.
+# Hostnames of well-known DNS-over-HTTPS servers. HISN answers NXDOMAIN for these (and their
+# subdomains) so browsers fall back to the router's DNS. One hostname per line, lowercase.
+# The Firefox canary domain (use-application-dns.net) is always blocked in code.
+
+# Google
 dns.google
+# Cloudflare (also covers mozilla.cloudflare-dns.com and chrome.cloudflare-dns.com)
 cloudflare-dns.com
-mozilla.cloudflare-dns.com
+one.one.one.one
+# Quad9
 dns.quad9.net
+dns9.quad9.net
+dns10.quad9.net
+dns11.quad9.net
+# Cisco OpenDNS
 doh.opendns.com
+# NextDNS
 dns.nextdns.io
+# CleanBrowsing
 doh.cleanbrowsing.org
+# AdGuard
+dns.adguard-dns.com
+# Mullvad
+dns.mullvad.net
+# Control D
+freedns.controld.com
+# DNS.SB
+doh.dns.sb
+
+# Apple iCloud Private Relay: Apple devices check these names; NXDOMAIN tells them the network
+# needs to see DNS, and they turn Private Relay off on this network (with a notice to the user).
+mask.icloud.com
+mask-h2.icloud.com

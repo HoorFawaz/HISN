@@ -7,7 +7,9 @@ Flow for each query:
 1. Drop it silently if the client is outside the allowed networks, so the
    server can never be abused as an open resolver.
 2. Validate and normalize the queried name. Invalid names get REFUSED.
-3. Ask the decision engine (lists, cache, look-alike rule, model; see
+3. DNS-over-HTTPS servers (``dns_server/doh_blocker.py``) get NXDOMAIN, so
+   browsers fall back to this server instead of bypassing it.
+4. Ask the decision engine (lists, cache, look-alike rule, model; see
    ``dns_server/decision.py``) and log the decision (minimal data, see
    ``storage/schema.sql``). Blocked names get the block page address,
    everything else is forwarded to the upstream DNS server.
@@ -40,7 +42,8 @@ from dnslib import (
 from dnslib.server import BaseResolver, DNSHandler, DNSLogger, DNSServer
 
 from config import Settings, settings
-from dns_server.decision import Decision, DecisionEngine, Verdict
+from dns_server.decision import Decision, DecisionEngine, Reason, Verdict
+from dns_server.doh_blocker import DohBlocker
 from dns_server.domain import InvalidDomainError, name_from_labels, normalize_domain
 from dns_server.resolver import UpstreamError, UpstreamResolver
 from ml.domain_age import DomainAgeService, RdapClient
@@ -67,11 +70,13 @@ class HisnResolver(BaseResolver):
         engine: DecisionEngine,
         upstream: UpstreamResolver,
         database: Database | None = None,
+        doh: DohBlocker | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
         self._upstream = upstream
         self._database = database
+        self._doh = doh
 
     def resolve(self, request: DNSRecord, handler: DNSHandler) -> DNSRecord:
         client_ip = handler.client_address[0]
@@ -103,6 +108,14 @@ class HisnResolver(BaseResolver):
         except InvalidDomainError as exc:
             logger.info("refused %s: invalid name (%s)", client_ip, exc)
             return _error_reply(request, RCODE.REFUSED)
+
+        doh_match = self._doh.match(domain) if self._doh is not None else None
+        if doh_match is not None:
+            # NXDOMAIN, not the block page: the browser must conclude that the
+            # DoH server does not exist and fall back to this DNS server.
+            logger.info("%s %s -> nxdomain (doh %s)", client_ip, domain, doh_match)
+            self._log_decision(domain, Decision(Verdict.BLOCK, Reason.DOH, doh_match), client_ip)
+            return _error_reply(request, RCODE.NXDOMAIN)
 
         decision = self._engine.decide(domain)
         qtype = QTYPE[request.q.qtype]
@@ -256,6 +269,14 @@ def load_age_service(config: Settings) -> DomainAgeService | None:
     return DomainAgeService(RdapClient(config.domain_age_timeout), known_ttl=config.domain_age_cache_ttl)
 
 
+def load_doh_blocker(config: Settings) -> DohBlocker | None:
+    """The DoH blocker, or None if turned off (HISN_DOH_BLOCK=false)."""
+    if not config.doh_block:
+        logger.info("DoH blocking is off")
+        return None
+    return DohBlocker.from_file(config.doh_hosts_path)
+
+
 def build_engine(
     config: Settings, cache: TTLCache[Verdict], ages: DomainAgeService | None = None
 ) -> DecisionEngine:
@@ -287,7 +308,7 @@ def main() -> int:
     )
     database = Database(settings.db_path)
     _purge_old_logs(database)
-    resolver = HisnResolver(settings, engine, upstream, database)
+    resolver = HisnResolver(settings, engine, upstream, database, load_doh_blocker(settings))
     udp, tcp = build_servers(resolver, settings.dns_host, settings.dns_port)
 
     udp.start_thread()

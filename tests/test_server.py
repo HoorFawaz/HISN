@@ -17,6 +17,7 @@ from dnslib.server import BaseResolver, DNSHandler, DNSLogger, DNSServer
 
 from config import Settings, settings
 from dns_server.decision import DecisionEngine
+from dns_server.doh_blocker import DohBlocker
 from dns_server.resolver import UpstreamResolver
 from dns_server.server import BLOCK_TTL, HisnResolver, build_servers
 from storage.db import Database
@@ -96,7 +97,7 @@ def start_hisn(upstream_port: int, database: Database) -> Iterator[Callable[...,
     """Return a function that starts a HISN server and gives back its port."""
     started: list[DNSServer] = []
 
-    def _start(engine: DecisionEngine | None = None, **overrides: object) -> int:
+    def _start(engine: DecisionEngine | None = None, doh: DohBlocker | None = None, **overrides: object) -> int:
         port = _free_port()
         values: dict[str, object] = {
             "dns_host": "127.0.0.1",
@@ -117,7 +118,7 @@ def start_hisn(upstream_port: int, database: Database) -> Iterator[Callable[...,
         upstream = UpstreamResolver(
             str(config.upstream_dns), config.upstream_port, config.upstream_timeout
         )
-        resolver = HisnResolver(config, engine, upstream, database)
+        resolver = HisnResolver(config, engine, upstream, database, doh)
         udp, tcp = build_servers(resolver, config.dns_host, config.dns_port)
         udp.start_thread()
         tcp.start_thread()
@@ -321,3 +322,36 @@ def test_model_blocks_above_the_threshold(start_hisn: Callable[..., int], databa
     _ask(port, "x7k2q9zv4m.xyz")  # second time: from the cache
     reasons = [row.reason for row in database.recent_requests() if row.domain == "x7k2q9zv4m.xyz"]
     assert sorted(reasons) == ["cache", "model"]
+
+
+# ----- DoH blocker (Phase 7) -----
+
+
+def test_doh_hosts_get_nxdomain_and_are_logged(start_hisn: Callable[..., int], database: Database) -> None:
+    port = start_hisn(doh=DohBlocker(frozenset({"dns.google", "cloudflare-dns.com"})))
+    for name in ("dns.google", "mozilla.cloudflare-dns.com", "use-application-dns.net"):
+        for tcp in (False, True):
+            reply = _ask(port, name, tcp=tcp)
+            assert reply.header.rcode == RCODE.NXDOMAIN
+            assert not reply.rr
+    rows = database.recent_requests(10)
+    assert {r.reason for r in rows} == {"doh"}
+    assert all(r.verdict == "block" for r in rows)
+
+
+def test_doh_blocker_is_not_a_substring_match(start_hisn: Callable[..., int]) -> None:
+    port = start_hisn(doh=DohBlocker(frozenset({"dns.google"})))
+    reply = _ask(port, "dns.google.example.net")  # contains the name, is not under it
+    assert reply.header.rcode == RCODE.NOERROR
+    assert _addresses(reply) == ["192.0.2.1"]
+
+
+def test_doh_check_comes_before_the_lists(start_hisn: Callable[..., int]) -> None:
+    engine = DecisionEngine(whitelist=frozenset({"dns.google"}), blacklist=frozenset())
+    port = start_hisn(engine=engine, doh=DohBlocker(frozenset({"dns.google"})))
+    assert _ask(port, "dns.google").header.rcode == RCODE.NXDOMAIN
+
+
+def test_without_doh_blocker_doh_hosts_resolve(start_hisn: Callable[..., int]) -> None:
+    port = start_hisn()
+    assert _ask(port, "use-application-dns.net").header.rcode == RCODE.NOERROR

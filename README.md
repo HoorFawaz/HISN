@@ -4,7 +4,7 @@ Network-level protection against phishing and fake websites. HISN acts as the DN
 server of a home network: every domain request is checked, and dangerous domains
 are answered with the address of a block page.
 
-> Status: Phase 6 (DNS server with lists, verdict cache and decision log; dataset, domain features, look-alike handling, model training and evaluation; the look-alike rule and the model decide unknown names in the server; the model also uses the domain age when it is known). See the project brief for the full roadmap.
+> Status: Phase 7 (DNS server with lists, verdict cache and decision log; dataset, domain features, look-alike handling, model training and evaluation; the look-alike rule and the model decide unknown names in the server; the model also uses the domain age when it is known; DNS-over-HTTPS servers get NXDOMAIN so browsers cannot bypass HISN). See the project brief for the full roadmap.
 
 ## Setup
 
@@ -90,6 +90,30 @@ Registration dates are kept in memory for `HISN_DOMAIN_AGE_CACHE_TTL` seconds (d
 (`x.netlify.app`, `x.duckdns.org`) are never looked up and always have an unknown age. Lookups send the registered domain
 (never the full host) to the registry of its suffix. Set `HISN_DOMAIN_AGE_LOOKUP=false` to turn them
 off; the model then scores names only.
+
+### DNS-over-HTTPS blocking (Phase 7)
+
+Browsers that use DNS-over-HTTPS (DoH) send their lookups straight to a public resolver over HTTPS,
+so HISN would never see them. Before using DoH they look up the DoH server's own name through the
+normal DNS, and HISN answers that with NXDOMAIN ("no such name"). Most browsers then fall back to
+the network's DNS, which is HISN. This step comes before the whitelist and the blacklist.
+
+- The DoH servers are listed in `data/lists/doh_hosts.txt` (Google, Cloudflare, Quad9, OpenDNS,
+  NextDNS and others). Subdomains match too, on label boundaries. Edit the file and restart.
+- `use-application-dns.net` is always answered NXDOMAIN: it is Firefox's documented signal that the
+  network filters DNS on purpose, and Firefox then keeps its automatic DoH off.
+- `mask.icloud.com` and `mask-h2.icloud.com` are listed so Apple devices turn iCloud Private Relay
+  off on this network (they show the user a notice).
+- These answers are logged with the reason `doh`. Set `HISN_DOH_BLOCK=false` to turn it off.
+
+Check it (each should print `status: NXDOMAIN`):
+
+```bash
+python -c "import sys; from dnslib import DNSRecord; print(DNSRecord.parse(DNSRecord.question(sys.argv[1]).send('127.0.0.1', 5353, timeout=5)))" dns.google
+```
+
+A DoH server set up by its IP address, a browser where the user forced DoH on, and DNS-over-TLS
+(port 853) are not stopped by this; see [docs/limitations.md](docs/limitations.md).
 
 ## Logs and privacy
 

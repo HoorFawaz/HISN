@@ -141,6 +141,9 @@ class Settings:
     domain_age_timeout: float  # seconds per RDAP request
     domain_age_cache_ttl: int  # seconds a known registration date is kept
 
+    # DNS-over-HTTPS servers get NXDOMAIN so browsers fall back to HISN
+    doh_block: bool
+
     # Storage
     db_path: Path
     log_retention_days: int
@@ -187,6 +190,7 @@ def load_settings() -> Settings:
         domain_age_lookup=_env_bool("HISN_DOMAIN_AGE_LOOKUP", True),
         domain_age_timeout=_env_float("HISN_DOMAIN_AGE_TIMEOUT", 3.0, minimum=0.5, maximum=15.0),
         domain_age_cache_ttl=_env_int("HISN_DOMAIN_AGE_CACHE_TTL", 604800, minimum=3600, maximum=2592000),
+        doh_block=_env_bool("HISN_DOH_BLOCK", True),
         db_path=_env_path("HISN_DB_PATH", "data/hisn.db"),
         log_retention_days=_env_int("HISN_LOG_RETENTION_DAYS", 30, minimum=1, maximum=365),
         verdict_cache_ttl=_env_int("HISN_VERDICT_CACHE_TTL", 3600, minimum=1, maximum=86400),

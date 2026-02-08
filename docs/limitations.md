@@ -94,6 +94,22 @@ Every result figure HISN reports depends on these points. Quote them next to any
 - **The age can be faked only by waiting.** Attackers can register domains early and use them later
   ("aged domains"); the age then gives no warning.
 
+## DNS-over-HTTPS blocking (Phase 7)
+
+- **Only names, not addresses.** HISN can only refuse to resolve a DoH server's *name*. A client
+  configured with a DoH server's IP address (for example `https://1.1.1.1/dns-query`) never asks for
+  a name and is not stopped. Blocking those addresses needs the router's firewall.
+- **A forced setting wins.** If a user (or an app) turns DoH on explicitly, or picks "strict" or
+  "max protection" mode, the browser may keep using DoH or stop resolving names instead of falling
+  back. The Firefox canary only stops Firefox from turning DoH on *by itself*.
+- **DNS-over-TLS** (Android "Private DNS", port 853) is not covered by this list. In "automatic" mode
+  Android only tries DNS-over-TLS with the network's own DNS server (HISN, which does not offer it)
+  and then uses normal DNS, so it is fine. A provider hostname typed in by the user is out of reach
+  without a firewall rule on port 853.
+- **The list goes stale.** New DoH providers appear; `doh_hosts.txt` needs occasional updates.
+- **Private Relay notice.** Blocking `mask.icloud.com` turns iCloud Private Relay off on this network
+  for every Apple device, and the user sees a notice explaining why.
+
 ## Tiny whitelist
 
 The whitelist holds a handful of official domains. Every brand added to `brands.txt` needs its

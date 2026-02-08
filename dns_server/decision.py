@@ -55,6 +55,7 @@ class Reason(str, Enum):
     LOOKALIKE = "lookalike"
     MODEL = "model"
     DEFAULT = "default"
+    DOH = "doh"  # set by the server for DNS-over-HTTPS hosts, not by the engine
 
 
 class LookalikeRule(Protocol):
