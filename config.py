@@ -164,7 +164,6 @@ class Settings:
     # Dashboard / API
     api_host: str
     api_port: int
-    api_token: str  # empty means "not configured"; the API must refuse to start
 
     # Static lists
     whitelist_path: Path
@@ -211,7 +210,6 @@ def load_settings() -> Settings:
         # Default to localhost: the dashboard must never be exposed by accident.
         api_host=str(_env_ip("HISN_API_HOST", "127.0.0.1")),
         api_port=_env_int("HISN_API_PORT", 8080, minimum=1, maximum=65535),
-        api_token=_env_str("HISN_API_TOKEN", ""),
         whitelist_path=lists_dir / "whitelist.txt",
         blacklist_path=lists_dir / "blacklist.txt",
         brands_path=lists_dir / "brands.txt",

@@ -123,6 +123,29 @@ Every result figure HISN reports depends on these points. Quote them next to any
   network and the demo, not for exposure to the internet. Keep `HISN_BLOCK_PAGE_IP` on the local
   network.
 
+## Dashboard (Phase 9)
+
+- **The alert lives in the dashboard.** The owner sees new blocks only while the page is open (banner
+  and tab count). There is no phone notification or e-mail; a mobile app for alerts is future work.
+- **Devices are IP addresses.** A device is shown by its address on the network. With DHCP an address
+  can move to another device, and phones with private (random) MAC addresses may get a new address.
+- **Daily counts use UTC days.** The chart's days start at 03:00 Saudi time.
+- **One shared admin account.** Everyone who manages the network uses the same password; there are no
+  separate users or permissions yet (possible future work). Only its scrypt hash is in the database.
+  Sessions are kept in memory, last 8 hours and end when the dashboard restarts; there is no "remember
+  me". A forgotten password is reset with `python -m api.set_password` on the HISN computer.
+- **The account is created from the HISN computer.** On the first start, only a browser on that
+  computer (127.0.0.1) can create the account, so another device cannot claim it first. If HISN runs on
+  a machine with no screen, use `python -m api.set_password` there instead.
+- **Plain HTTP on the local network.** The password (at login) and the session token travel unencrypted
+  between the browser and the dashboard. That is acceptable on `127.0.0.1`; on a LAN address, anyone
+  who can sniff the home network could read them.
+- **An unblock trusts the owner.** An unblocked site is allowed for every device, together with its
+  subdomains, even when it is on the blacklist. If the site turns malicious later, HISN will not block
+  it until the owner presses "Block again". The change reaches devices within about half a minute (DNS
+  caching), not instantly.
+- **Development web server** (Werkzeug), as for the block page.
+
 ## Tiny whitelist
 
 The whitelist holds a handful of official domains. Every brand added to `brands.txt` needs its

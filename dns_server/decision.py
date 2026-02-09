@@ -3,6 +3,9 @@
 Order of checks (the first match wins):
 
 1. Whitelist: exact official domains, always allowed.
+   Then the sites the owner unblocked from the dashboard
+   (``dns_server/owner_list.py``), allowed even if a list, the rule or the
+   model would block them: the owner fixes a wrong block this way.
 2. Blacklist: reported malicious domains, always blocked.
 3. Verdict cache: a recent verdict for this exact domain, if any.
 4. Look-alike rule: a name that imitates a protected brand is blocked on its
@@ -55,6 +58,7 @@ class Reason(str, Enum):
     LOOKALIKE = "lookalike"
     MODEL = "model"
     DEFAULT = "default"
+    OWNER = "owner"  # unblocked by the owner from the dashboard
     DOH = "doh"  # set by the server for DNS-over-HTTPS hosts, not by the engine
 
 
@@ -69,6 +73,12 @@ class Scorer(Protocol):
     """What the engine needs from ``ml.predictor.Predictor``."""
 
     def probability(self, host: str, age_days: float | None = None) -> float: ...
+
+
+class OwnerAllowed(Protocol):
+    """What the engine needs from ``dns_server.owner_list.OwnerAllowList``."""
+
+    def match(self, domain: str) -> str | None: ...
 
 
 class AgeSource(Protocol):
@@ -136,6 +146,7 @@ class DecisionEngine:
         scorer: Scorer | None = None,
         threshold: float = 0.9,
         ages: AgeSource | None = None,
+        owner_allowed: OwnerAllowed | None = None,
     ) -> None:
         if not 0.0 <= threshold <= 1.0:
             raise ValueError("threshold must be between 0 and 1")
@@ -147,6 +158,7 @@ class DecisionEngine:
         self._scorer = scorer
         self._threshold = threshold
         self._ages = ages
+        self._owner_allowed = owner_allowed
 
     @classmethod
     def from_files(
@@ -171,6 +183,10 @@ class DecisionEngine:
             if candidate in self._whitelist:
                 return Decision(Verdict.ALLOW, Reason.WHITELIST, candidate)
 
+        owner_match = self._owner_match(domain)
+        if owner_match is not None:
+            return Decision(Verdict.ALLOW, Reason.OWNER, owner_match)
+
         for candidate in parent_domains(domain):
             if candidate in self._blacklist:
                 return Decision(Verdict.BLOCK, Reason.BLACKLIST, candidate)
@@ -191,6 +207,15 @@ class DecisionEngine:
         if cacheable and self._cache is not None:
             self._cache.put(domain, decision.verdict)
         return decision
+
+    def _owner_match(self, domain: str) -> str | None:
+        if self._owner_allowed is None:
+            return None
+        try:
+            return self._owner_allowed.match(domain)
+        except Exception:  # a broken owner list must not change any other decision
+            logger.exception("owner allow list failed for %s; ignoring it", domain)
+            return None
 
     def _lookalike_decision(self, domain: str) -> Decision | None:
         if self._lookalike is None or not self._block_techniques:

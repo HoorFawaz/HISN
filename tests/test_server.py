@@ -10,6 +10,7 @@ import dataclasses
 import ipaddress
 import socket
 from collections.abc import Callable, Iterator
+from pathlib import Path
 
 import pytest
 from dnslib import QTYPE, RCODE, RR, A, DNSLabel, DNSQuestion, DNSRecord
@@ -18,6 +19,7 @@ from dnslib.server import BaseResolver, DNSHandler, DNSLogger, DNSServer
 from config import Settings, settings
 from dns_server.decision import DecisionEngine
 from dns_server.doh_blocker import DohBlocker
+from dns_server.owner_list import OwnerAllowList
 from dns_server.resolver import UpstreamResolver
 from dns_server.server import BLOCK_TTL, HisnResolver, build_servers
 from storage.db import Database
@@ -337,6 +339,7 @@ def test_doh_hosts_get_nxdomain_and_are_logged(start_hisn: Callable[..., int], d
     rows = database.recent_requests(10)
     assert {r.reason for r in rows} == {"doh"}
     assert all(r.verdict == "block" for r in rows)
+    assert database.top_blocked() == []  # a DoH lookup is not a threat
 
 
 def test_doh_blocker_is_not_a_substring_match(start_hisn: Callable[..., int]) -> None:
@@ -355,3 +358,25 @@ def test_doh_check_comes_before_the_lists(start_hisn: Callable[..., int]) -> Non
 def test_without_doh_blocker_doh_hosts_resolve(start_hisn: Callable[..., int]) -> None:
     port = start_hisn()
     assert _ask(port, "use-application-dns.net").header.rcode == RCODE.NOERROR
+
+
+def test_owner_unblock_from_the_dashboard_applies_without_restart(
+    start_hisn: Callable[..., int], database: Database, tmp_path: Path
+) -> None:
+    # The dashboard is another process with its own connection to the same file.
+    shared = tmp_path / "shared.db"
+    dns_db, dashboard_db = Database(shared), Database(shared)
+    engine = DecisionEngine(
+        whitelist=frozenset(),
+        blacklist=frozenset({"absher-sa.com"}),
+        owner_allowed=OwnerAllowList(dns_db, refresh=0.0),
+    )
+    port = start_hisn(engine=engine)
+    assert _addresses(_ask(port, "absher-sa.com")) == [BLOCK_PAGE_IP]
+    dashboard_db.allow_domain("absher-sa.com")
+    assert _addresses(_ask(port, "absher-sa.com")) == ["192.0.2.1"]
+    assert database.recent_requests(1)[0].reason == "owner"
+    dashboard_db.remove_allowed("absher-sa.com")
+    assert _addresses(_ask(port, "absher-sa.com")) == [BLOCK_PAGE_IP]
+    dns_db.close()
+    dashboard_db.close()

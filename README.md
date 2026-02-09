@@ -4,7 +4,7 @@ Network-level protection against phishing and fake websites. HISN acts as the DN
 server of a home network: every domain request is checked, and dangerous domains
 are answered with the address of a block page.
 
-> Status: Phase 8 (DNS server with lists, verdict cache and decision log; dataset, domain features, look-alike handling, model training and evaluation; the look-alike rule and the model decide unknown names in the server; the model also uses the domain age when it is known; DNS-over-HTTPS servers get NXDOMAIN so browsers cannot bypass HISN; a block page explains why a site was blocked). See the project brief for the full roadmap.
+> Status: Phase 9 (DNS server with lists, verdict cache and decision log; dataset, domain features, look-alike handling, model training and evaluation; the look-alike rule and the model decide unknown names in the server; the model also uses the domain age when it is known; DNS-over-HTTPS servers get NXDOMAIN so browsers cannot bypass HISN; a block page explains why a site was blocked; a dashboard shows blocked threats, targeted devices and alerts). See the project brief for the full roadmap.
 
 ## Setup
 
@@ -49,7 +49,8 @@ Edit `data/lists/whitelist.txt` and `data/lists/blacklist.txt`, then restart the
 
 The first step that gives an answer wins:
 
-1. whitelist (always allow), 2. blacklist (always block), 3. verdict cache,
+1. whitelist (always allow), then the sites the owner unblocked in the dashboard (allow, see Dashboard),
+2. blacklist (always block), 3. verdict cache,
 4. look-alike rule: a name that imitates a brand in `brands.txt` is blocked on its own,
 5. model: blocked if its probability is at least `HISN_MODEL_THRESHOLD` (default 0.90), otherwise allowed.
    The domain age is one of its inputs when it is already known (Phase 6, below),
@@ -65,7 +66,7 @@ logs a warning and runs without it; if the model fails on a name, that name is a
 logged. After retraining, restart the server. The first query for a new name takes some milliseconds
 longer (feature extraction and the forest); repeats come from the cache.
 
-The reason of every decision (`whitelist`, `blacklist`, `cache`, `lookalike`, `model`, `default`) is in
+The reason of every decision (`whitelist`, `owner`, `blacklist`, `cache`, `lookalike`, `model`, `default`) is in
 the log, so you can see why a name was blocked:
 
 ```bash
@@ -150,6 +151,69 @@ The Arabic and English text uses IBM Plex Sans Arabic, bundled in `web/block_pag
 The page runs no script, is never framed or cached, escapes the host name, and never reads what a
 phishing form posts to it. It serves plain HTTP only: an `https://` link shows a browser error instead
 of the page. The plan for that is in [docs/https_block_page.md](docs/https_block_page.md).
+
+## Dashboard (Phase 9)
+
+The dashboard shows what HISN blocked: threats blocked over the last 14 days and today, requests per
+day and blocks by reason (Chart.js charts), the latest blocks, the most blocked sites, the targeted
+devices (most blocked threats first) and DoH bypass attempts stopped. When something new was blocked
+since the owner last pressed "OK", an alert banner lists it (the page refreshes every 15 seconds and
+the browser tab shows the count). DoH lookups are logged but are not counted as threats.
+
+There is one account, the admin, shared by the people who manage the home network; each device signs
+in and out on its own. The pages are in Arabic or English (the ع|E button at the top), in dark or light
+mode (the ☾/☀ button next to it); both choices are remembered in the browser.
+
+1. Start the dashboard in another terminal (next to the DNS server and the block page):
+
+   ```bash
+   python -m api.app
+   ```
+
+2. The first time, open `http://127.0.0.1:8080/` **on the HISN computer itself** and create the account
+   (username, then a password of at least 12 characters, twice). For safety this works only from that
+   computer and only once, so nobody else on the network can claim the account first.
+
+3. From then on, open the dashboard from any device on the home network and sign in with the username and
+   password (the username ignores upper/lower case).
+   It works on a phone or a laptop.
+
+Forgotten password: run this on the HISN computer, then restart the dashboard:
+
+```bash
+python -m api.set_password
+```
+
+Security: it refuses to start on an address that is not loopback or private (`HISN_API_HOST`, default
+`127.0.0.1`), and only `HISN_ALLOWED_NETWORKS` clients get an answer. Only a salted scrypt hash of the
+password is kept, in the database. Signing in returns a random session token (8 hours, kept in memory,
+so a restart signs everyone out); every other `/api/` call needs `Authorization: Bearer <session token>`.
+The page keeps the token in the browser tab only (no cookie, so no CSRF) and never stores the password.
+Wrong sign-ins are limited to 10 per 10 minutes per client (the answer never says whether the
+username or the password was wrong), and all requests to 240 per minute. Domains
+are shown with `textContent` only (no HTML), and a strict Content Security Policy allows no inline
+script. "Delete logs" wipes the whole log, like `python -m storage.db delete-all --yes`; the account and
+the unblocked sites stay.
+
+**Unblocking a site.** If HISN blocked a site by mistake, press "فك الحظر" (Unblock) next to it in
+"Most blocked sites". It is then allowed for every device, even if it is on the blacklist or the rule or
+the model would block it, and its subdomains too. The DNS server reads the change from the database
+within about 2 seconds, with no restart; devices may keep the block for up to 30 seconds more (the
+block answer's TTL) and browsers a little longer. The "Unblocked sites" card lists these sites with the
+reason they had been blocked, and "إعادة الحجب" (Block again) puts the normal checks back. The list is a
+setting, kept when logs are purged or deleted; each unblock and re-block is also logged. DNS-over-HTTPS
+hosts cannot be unblocked this way.
+
+API (JSON): `GET /api/setup` says whether the account exists; `POST /api/setup` with
+`{"username", "password", "confirm"}` creates it (first start, HISN computer only); `POST /api/login` with
+`{"username": "...", "password": "..."}` returns `{"token", "expires_in"}`. With the token: `GET /api/me`,
+`GET /api/stats`, `/api/blocked`, `/api/devices`, `/api/recent?after=<id>`, `/api/allowed`,
+`POST /api/allowed` and `POST /api/allowed/delete` with `{"domain": "..."}`, `POST /api/logout`,
+`POST /api/logs/delete` with `{"confirm": "delete"}`.
+
+Chart.js 4.4.7 is bundled in `web/dashboard/vendor/` (MIT license next to it) and the logo font Aref Ruqaa
+in `web/dashboard/fonts/` (SIL Open Font License, `OFL.txt` next to it), so the dashboard needs no internet.
+The header art (`web/dashboard/banner.svg`) is an original drawing made for HISN.
 
 ## Logs and privacy
 

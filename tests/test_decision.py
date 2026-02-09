@@ -333,3 +333,41 @@ def test_age_is_not_looked_up_for_list_or_rule_decisions() -> None:
     engine.decide("www.absher.sa")
     engine.decide("evil.example")
     assert ages.calls == 0
+
+
+# ----- sites the owner unblocked from the dashboard -----
+
+
+class OwnerList:
+    def __init__(self, *domains: str) -> None:
+        self.domains = set(domains)
+
+    def match(self, domain: str) -> str | None:
+        return domain if domain in self.domains else None
+
+
+def test_owner_unblock_wins_over_the_blacklist_and_the_cache() -> None:
+    cache: TTLCache[Verdict] = TTLCache(3600)
+    cache.put("cached-block.test", Verdict.BLOCK)
+    owner = OwnerList("bad.test", "cached-block.test")
+    engine = DecisionEngine(frozenset({"example.org"}), frozenset({"bad.test"}), cache, owner_allowed=owner)
+    for name in ("bad.test", "cached-block.test"):
+        decision = engine.decide(name)
+        assert (decision.verdict, decision.reason, decision.matched) == (Verdict.ALLOW, Reason.OWNER, name)
+    owner.domains.clear()  # blocked again
+    assert engine.decide("bad.test").reason is Reason.BLACKLIST
+    assert engine.decide("cached-block.test").verdict is Verdict.BLOCK
+
+
+def test_whitelist_is_still_checked_first() -> None:
+    engine = DecisionEngine(frozenset({"example.org"}), frozenset(), owner_allowed=OwnerList("example.org"))
+    assert engine.decide("example.org").reason is Reason.WHITELIST
+
+
+def test_a_broken_owner_list_changes_nothing() -> None:
+    class Broken:
+        def match(self, domain: str) -> str | None:
+            raise RuntimeError("boom")
+
+    engine = DecisionEngine(frozenset(), frozenset({"bad.test"}), owner_allowed=Broken())
+    assert engine.decide("bad.test").reason is Reason.BLACKLIST

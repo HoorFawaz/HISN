@@ -36,3 +36,35 @@ CREATE TABLE IF NOT EXISTS stats (
     allowed INTEGER NOT NULL DEFAULT 0,
     blocked INTEGER NOT NULL DEFAULT 0
 );
+
+-- Sites the owner unblocked from the dashboard. This is a setting, not a log:
+-- it is kept by the retention purge and by "delete all logs". The DNS server
+-- allows these names (and their subdomains) before any other check except the
+-- whitelist file.
+CREATE TABLE IF NOT EXISTS allowed_domains (
+    domain     TEXT    PRIMARY KEY,
+    added_at   INTEGER NOT NULL,
+    was_reason TEXT                 -- why it had been blocked, when known
+);
+
+-- Every unblock and re-block made from the dashboard, for the record.
+-- Purged and deleted with the other logs.
+CREATE TABLE IF NOT EXISTS owner_actions (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts     INTEGER NOT NULL,
+    action TEXT    NOT NULL CHECK (action IN ('unblock', 'reblock')),
+    domain TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_owner_actions_ts ON owner_actions (ts);
+
+-- The one dashboard account (the admin), shared by everyone who manages the
+-- home network. Only a salted scrypt hash of the password is stored. Not a
+-- log: never purged or deleted with the logs.
+CREATE TABLE IF NOT EXISTS admin_account (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    username      TEXT    NOT NULL,
+    password_hash TEXT    NOT NULL,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+);

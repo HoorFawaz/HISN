@@ -161,3 +161,93 @@ def test_command_line_delete_all_requires_confirmation(
     assert check.recent_requests() == []
     check.close()
     assert "All logs deleted" in capsys.readouterr().out
+
+
+# ----- dashboard queries (Phase 9) -----
+
+
+def test_doh_lookups_are_logged_but_not_counted_as_threats(db: Database) -> None:
+    db.log_decision("dns.google", "block", "doh", "192.168.1.5", ts=NOW)
+    db.log_decision("evil.example", "block", "blacklist", "192.168.1.5", ts=NOW)
+    assert [r.domain for r in db.recent_requests()] == ["evil.example", "dns.google"]
+    assert [r.domain for r in db.top_blocked()] == ["evil.example"]
+    assert [r.domain for r in db.recent_blocks()] == ["evil.example"]
+    assert db.daily_stats()[0].blocked == 1
+    assert db.doh_count() == 1
+    (device,) = db.device_stats()
+    assert (device.requests, device.blocked) == (2, 1)
+
+
+def test_recent_blocks_after_an_id(db: Database) -> None:
+    db.log_decision("a.example", "block", "model", "dev", ts=NOW)
+    db.log_decision("ok.example", "allow", "default", "dev", ts=NOW)
+    db.log_decision("b.example", "block", "lookalike", "dev", ts=NOW + 1)
+    events = db.recent_blocks()
+    assert [e.domain for e in events] == ["b.example", "a.example"]
+    assert [e.domain for e in db.recent_blocks(after_id=events[1].id)] == ["b.example"]
+    assert db.recent_blocks(after_id=events[0].id) == []
+    assert len(db.recent_blocks(limit=1)) == 1
+
+
+def test_device_stats_puts_the_most_targeted_device_first(db: Database) -> None:
+    for _ in range(5):
+        db.log_decision("ok.example", "allow", "default", "192.168.1.10", ts=NOW)
+    db.log_decision("evil.example", "block", "blacklist", "192.168.1.20", ts=NOW + 5)
+    rows = db.device_stats()
+    assert [(r.device, r.requests, r.blocked) for r in rows] == [
+        ("192.168.1.20", 1, 1),
+        ("192.168.1.10", 5, 0),
+    ]
+    assert rows[0].last_seen == NOW + 5
+
+
+def test_blocked_by_reason_counts_domains_with_their_real_reason(db: Database) -> None:
+    db.log_decision("a.example", "block", "lookalike", "dev", ts=NOW)
+    db.log_decision("a.example", "block", "cache", "dev", ts=NOW + 1)
+    db.log_decision("b.example", "block", "model", "dev", ts=NOW)
+    db.log_decision("c.example", "block", "model", "dev", ts=NOW)
+    assert db.blocked_by_reason() == {"lookalike": 1, "model": 2}
+
+
+# ----- sites the owner unblocked -----
+
+
+def test_allow_and_reblock_a_domain(db: Database) -> None:
+    db.log_decision("evil.example", "block", "blacklist", "dev", ts=NOW)
+    assert db.allow_domain("evil.example", ts=NOW + 1)
+    assert not db.allow_domain("evil.example", ts=NOW + 2)  # already allowed, not logged twice
+    (row,) = db.allowed_domains()
+    assert (row.domain, row.added_at, row.was_reason) == ("evil.example", NOW + 1, "blacklist")
+    assert db.allowed_set() == frozenset({"evil.example"})
+    assert db.allow_domain("never-blocked.example", ts=NOW + 3)
+    assert db.allowed_domains()[0].was_reason is None
+
+    assert db.remove_allowed("evil.example", ts=NOW + 4)
+    assert not db.remove_allowed("evil.example", ts=NOW + 5)
+    assert db.allowed_set() == frozenset({"never-blocked.example"})
+    assert [(a.action, a.domain) for a in db.owner_actions()] == [
+        ("reblock", "evil.example"),
+        ("unblock", "never-blocked.example"),
+        ("unblock", "evil.example"),
+    ]
+
+
+def test_allowed_sites_survive_log_deletion_but_actions_do_not(db: Database) -> None:
+    db.allow_domain("ok.example", ts=NOW)
+    db.purge_older_than(30, now=NOW + 31 * DAY)
+    assert db.allowed_set() == frozenset({"ok.example"}) and db.owner_actions() == []
+    db.allow_domain("two.example", ts=NOW)
+    db.delete_all_logs()
+    assert db.allowed_set() == frozenset({"ok.example", "two.example"}) and db.owner_actions() == []
+
+
+def test_admin_account_is_created_once_and_survives_log_deletion(db: Database) -> None:
+    assert db.admin_account() is None
+    assert db.create_admin("hoor", "hash-1", ts=NOW)
+    assert not db.create_admin("other", "hash-2", ts=NOW)
+    db.delete_all_logs()
+    db.purge_older_than(1, now=NOW + 10 * DAY)
+    account = db.admin_account()
+    assert account is not None and (account.username, account.password_hash) == ("hoor", "hash-1")
+    db.set_admin("hoor", "hash-3")
+    assert db.admin_account().password_hash == "hash-3"  # type: ignore[union-attr]

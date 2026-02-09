@@ -33,6 +33,10 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 SCHEMA_VERSION = 1
 SECONDS_PER_DAY = 86_400
 MAX_LIMIT = 1_000  # upper bound for any "give me N rows" call
+# A DNS-over-HTTPS lookup answered NXDOMAIN (Phase 7) is logged, but it is not a
+# threat: it stays out of the daily totals, the blocked-domain list and the
+# dashboard's threat counts.
+DOH_REASON = "doh"
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,43 @@ class BlockedRow:
     first_seen: int
     last_seen: int
     reason: str
+
+
+@dataclass(frozen=True)
+class DeviceRow:
+    device: str
+    requests: int
+    blocked: int  # threats only (DoH lookups not counted)
+    last_seen: int
+
+
+@dataclass(frozen=True)
+class BlockEvent:
+    id: int
+    ts: int
+    domain: str
+    reason: str
+    device: str
+
+
+@dataclass(frozen=True)
+class AdminAccount:
+    username: str
+    password_hash: str
+
+
+@dataclass(frozen=True)
+class AllowedRow:
+    domain: str
+    added_at: int
+    was_reason: str | None
+
+
+@dataclass(frozen=True)
+class OwnerAction:
+    ts: int
+    action: str  # "unblock" or "reblock"
+    domain: str
 
 
 @dataclass(frozen=True)
@@ -111,7 +152,10 @@ class Database:
         device: str,
         ts: float | None = None,
     ) -> None:
-        """Record one decision in the three tables, in a single transaction."""
+        """Record one decision in the three tables, in a single transaction.
+
+        A DoH lookup goes to ``requests`` only (see :data:`DOH_REASON`).
+        """
         moment = int(time.time() if ts is None else ts)
         blocked = verdict == "block"
         with self._lock, self._conn:
@@ -119,6 +163,8 @@ class Database:
                 "INSERT INTO requests (ts, domain, verdict, reason, device) VALUES (?, ?, ?, ?, ?)",
                 (moment, domain, verdict, reason, device),
             )
+            if reason == DOH_REASON:
+                return
             self._conn.execute(
                 "INSERT INTO stats (day, allowed, blocked) VALUES (?, ?, ?) "
                 "ON CONFLICT(day) DO UPDATE SET "
@@ -150,19 +196,105 @@ class Database:
         with self._lock, self._conn:
             cursor = self._conn.execute("DELETE FROM requests WHERE ts < ?", (cutoff,))
             self._conn.execute("DELETE FROM blocked_domains WHERE last_seen < ?", (cutoff,))
+            self._conn.execute("DELETE FROM owner_actions WHERE ts < ?", (cutoff,))
             return cursor.rowcount
 
     def delete_all_logs(self) -> None:
-        """Remove every log entry and shrink the file."""
+        """Remove every log entry and shrink the file. The owner's allowed sites are kept."""
         with self._lock:
             with self._conn:
                 self._conn.execute("DELETE FROM requests")
                 self._conn.execute("DELETE FROM blocked_domains")
                 self._conn.execute("DELETE FROM stats")
+                self._conn.execute("DELETE FROM owner_actions")
             self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self._conn.execute("VACUUM")
 
-    # ----- reading (block page now, dashboard in a later phase) -----
+    # ----- the dashboard account -----
+
+    def admin_account(self) -> AdminAccount | None:
+        with self._lock:
+            row = self._conn.execute("SELECT username, password_hash FROM admin_account WHERE id = 1").fetchone()
+        return AdminAccount(*row) if row else None
+
+    def create_admin(self, username: str, password_hash: str, ts: float | None = None) -> bool:
+        """Create the admin account. False if it already exists (only the first one wins)."""
+        moment = int(time.time() if ts is None else ts)
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "INSERT OR IGNORE INTO admin_account (id, username, password_hash, created_at, updated_at) "
+                "VALUES (1, ?, ?, ?, ?)",
+                (username, password_hash, moment, moment),
+            )
+            return cursor.rowcount == 1
+
+    def set_admin(self, username: str, password_hash: str, ts: float | None = None) -> None:
+        """Create the admin account or replace its name and password (password reset)."""
+        moment = int(time.time() if ts is None else ts)
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO admin_account (id, username, password_hash, created_at, updated_at) "
+                "VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+                "username = excluded.username, password_hash = excluded.password_hash, "
+                "updated_at = excluded.updated_at",
+                (username, password_hash, moment, moment),
+            )
+
+    # ----- sites the owner unblocked (dashboard) -----
+
+    def allow_domain(self, domain: str, ts: float | None = None) -> bool:
+        """Unblock an already-normalized ``domain``. False if it was already allowed."""
+        moment = int(time.time() if ts is None else ts)
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT reason FROM blocked_domains WHERE domain = ?", (domain,)
+            ).fetchone()
+            cursor = self._conn.execute(
+                "INSERT OR IGNORE INTO allowed_domains (domain, added_at, was_reason) VALUES (?, ?, ?)",
+                (domain, moment, row[0] if row else None),
+            )
+            if cursor.rowcount == 0:
+                return False
+            self._conn.execute(
+                "INSERT INTO owner_actions (ts, action, domain) VALUES (?, 'unblock', ?)", (moment, domain)
+            )
+            return True
+
+    def remove_allowed(self, domain: str, ts: float | None = None) -> bool:
+        """Block ``domain`` again (normal checks apply). False if it was not allowed."""
+        moment = int(time.time() if ts is None else ts)
+        with self._lock, self._conn:
+            cursor = self._conn.execute("DELETE FROM allowed_domains WHERE domain = ?", (domain,))
+            if cursor.rowcount == 0:
+                return False
+            self._conn.execute(
+                "INSERT INTO owner_actions (ts, action, domain) VALUES (?, 'reblock', ?)", (moment, domain)
+            )
+            return True
+
+    def allowed_domains(self, limit: int = MAX_LIMIT) -> list[AllowedRow]:
+        """The owner's allowed sites, newest first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT domain, added_at, was_reason FROM allowed_domains ORDER BY added_at DESC, domain LIMIT ?",
+                (_clamp(limit),),
+            ).fetchall()
+        return [AllowedRow(*row) for row in rows]
+
+    def allowed_set(self) -> frozenset[str]:
+        """All allowed names, for the DNS server."""
+        with self._lock:
+            rows = self._conn.execute("SELECT domain FROM allowed_domains").fetchall()
+        return frozenset(row[0] for row in rows)
+
+    def owner_actions(self, limit: int = 20) -> list[OwnerAction]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT ts, action, domain FROM owner_actions ORDER BY id DESC LIMIT ?", (_clamp(limit),)
+            ).fetchall()
+        return [OwnerAction(*row) for row in rows]
+
+    # ----- reading (block page and dashboard) -----
 
     def recent_requests(self, limit: int = 100) -> list[RequestRow]:
         with self._lock:
@@ -181,6 +313,43 @@ class Database:
                 (_clamp(limit),),
             ).fetchall()
         return [BlockedRow(*row) for row in rows]
+
+    def recent_blocks(self, after_id: int = 0, limit: int = 20) -> list[BlockEvent]:
+        """Blocked threats newest first; only those with an id above ``after_id`` (for alerts)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, ts, domain, reason, device FROM requests "
+                "WHERE verdict = 'block' AND reason != ? AND id > ? ORDER BY id DESC LIMIT ?",
+                (DOH_REASON, int(after_id), _clamp(limit)),
+            ).fetchall()
+        return [BlockEvent(*row) for row in rows]
+
+    def device_stats(self, limit: int = 20) -> list[DeviceRow]:
+        """Requests and blocked threats per device, most targeted first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT device, COUNT(*), "
+                "SUM(CASE WHEN verdict = 'block' AND reason != ? THEN 1 ELSE 0 END), MAX(ts) "
+                "FROM requests GROUP BY device ORDER BY 3 DESC, 2 DESC LIMIT ?",
+                (DOH_REASON, _clamp(limit)),
+            ).fetchall()
+        return [DeviceRow(*row) for row in rows]
+
+    def blocked_by_reason(self) -> dict[str, int]:
+        """Number of distinct blocked domains per reason (the real reason, never ``cache``)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT reason, COUNT(*) FROM blocked_domains GROUP BY reason"
+            ).fetchall()
+        return {reason: count for reason, count in rows}
+
+    def doh_count(self) -> int:
+        """DNS-over-HTTPS lookups answered NXDOMAIN within the retention period."""
+        with self._lock:
+            (count,) = self._conn.execute(
+                "SELECT COUNT(*) FROM requests WHERE reason = ?", (DOH_REASON,)
+            ).fetchone()
+        return int(count)
 
     def blocked_reason(self, domain: str) -> str | None:
         """Reason of the last block of ``domain`` (used by the block page), or None."""

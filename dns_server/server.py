@@ -44,6 +44,7 @@ from dnslib.server import BaseResolver, DNSHandler, DNSLogger, DNSServer
 from config import Settings, settings
 from dns_server.decision import Decision, DecisionEngine, Reason, Verdict
 from dns_server.doh_blocker import DohBlocker
+from dns_server.owner_list import OwnerAllowList
 from dns_server.domain import InvalidDomainError, name_from_labels, normalize_domain
 from dns_server.resolver import UpstreamError, UpstreamResolver
 from ml.domain_age import DomainAgeService, RdapClient
@@ -278,7 +279,10 @@ def load_doh_blocker(config: Settings) -> DohBlocker | None:
 
 
 def build_engine(
-    config: Settings, cache: TTLCache[Verdict], ages: DomainAgeService | None = None
+    config: Settings,
+    cache: TTLCache[Verdict],
+    ages: DomainAgeService | None = None,
+    database: Database | None = None,
 ) -> DecisionEngine:
     scorer = load_predictor(config)
     return DecisionEngine.from_files(
@@ -291,6 +295,7 @@ def build_engine(
         threshold=config.model_threshold,
         # Ages only feed the model, so without a model there is nothing to look up.
         ages=ages if scorer is not None else None,
+        owner_allowed=OwnerAllowList(database) if database is not None else None,
     )
 
 
@@ -302,11 +307,11 @@ def main() -> int:
 
     cache: TTLCache[Verdict] = TTLCache(settings.verdict_cache_ttl)
     ages = load_age_service(settings)
-    engine = build_engine(settings, cache, ages)
+    database = Database(settings.db_path)
+    engine = build_engine(settings, cache, ages, database)
     upstream = UpstreamResolver(
         str(settings.upstream_dns), settings.upstream_port, settings.upstream_timeout
     )
-    database = Database(settings.db_path)
     _purge_old_logs(database)
     resolver = HisnResolver(settings, engine, upstream, database, load_doh_blocker(settings))
     udp, tcp = build_servers(resolver, settings.dns_host, settings.dns_port)
