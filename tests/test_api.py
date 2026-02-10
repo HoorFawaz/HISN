@@ -221,7 +221,8 @@ def test_stats(client: FlaskClient, db: Database) -> None:
     assert [d["day"] for d in body["daily"]] == ["2027-01-13", "2027-01-14", "2027-01-15"]
     assert body["today"] == {"day": "2027-01-15", "allowed": 1, "blocked": 2}
     assert body["totals"] == {"allowed": 1, "blocked": 3}  # the DoH lookup is not a threat
-    assert body["by_reason"] == {"lookalike": 1, "blacklist": 1}
+    # Every reason is listed, even at zero; DoH has its own label and is not a threat.
+    assert body["by_reason"] == {"blacklist": 1, "lookalike": 1, "model": 0, "doh": 1}
     assert body["doh_blocked"] == 1
     assert body["devices"] == 2
     assert body["retention_days"] == settings.log_retention_days
@@ -230,22 +231,58 @@ def test_stats(client: FlaskClient, db: Database) -> None:
 def test_blocked_devices_and_recent(client: FlaskClient, db: Database) -> None:
     fill(db)
     blocked = get(client, "/api/blocked").get_json()
-    assert [(b["domain"], b["hits"], b["reason"]) for b in blocked] == [
-        ("abhser.com", 2, "lookalike"),
-        ("evil.example", 1, "blacklist"),
-    ]
+    assert [(b["domain"], b["hits"], b["reason"]) for b in blocked] == [("abhser.com", 2, "lookalike")]  # more than once
     devices = get(client, "/api/devices").get_json()
     assert [(d["device"], d["blocked"], d["requests"]) for d in devices] == [
         ("192.168.1.20", 2, 3),
         ("192.168.1.21", 1, 2),
     ]
     recent = get(client, "/api/recent").get_json()
-    assert [e["domain"] for e in recent] == ["abhser.com", "abhser.com", "evil.example"]
+    assert [(e["domain"], e["reason"]) for e in recent] == [
+        ("dns.google", "doh"),
+        ("abhser.com", "lookalike"),  # a cache hit shows the reason it repeats
+        ("abhser.com", "lookalike"),
+        ("evil.example", "blacklist"),
+    ]
     newer = get(client, f"/api/recent?after={recent[1]['id']}").get_json()
     assert [e["id"] for e in newer] == [recent[0]["id"]]
 
 
-@pytest.mark.parametrize("query", ["days=0", "days=91", "days=abc", "limit=0", "limit=101"])
+def test_threat_counts_agree_and_cover_the_retention_period(client: FlaskClient, db: Database) -> None:
+    fill(db)
+    db.log_decision("older.example", "block", "model", "192.168.1.22", ts=NOW - 40 * 86_400)  # before the 30 days
+    for _ in range(2):
+        db.log_decision("lastmonth.example", "block", "model", "192.168.1.20", ts=NOW - 25 * 86_400)
+    stats = get(client, "/api/stats").get_json()
+    assert stats["days"] == settings.log_retention_days == 30 and len(stats["daily"]) == 30
+    devices = get(client, "/api/devices").get_json()
+    assert stats["totals"]["blocked"] == sum(d["blocked"] for d in devices) == 5
+    assert stats["devices"] == len(devices) == 2
+    listed = {b["domain"] for b in get(client, "/api/blocked").get_json()}
+    assert "lastmonth.example" in listed and "older.example" not in listed
+    assert "older.example" not in {e["domain"] for e in get(client, "/api/recent").get_json()}
+
+
+def test_lists_have_no_row_limit(client: FlaskClient, db: Database) -> None:
+    for i in range(150):
+        db.log_decision(f"site{i}.example", "block", "model", "192.168.1.20", ts=NOW - i)
+        db.log_decision(f"site{i}.example", "block", "cache", "192.168.1.20", ts=NOW - i)
+    assert len(get(client, "/api/blocked").get_json()) == 150
+    assert len(get(client, "/api/recent").get_json()) == 300
+
+
+def test_an_unblocked_site_leaves_the_blocked_lists(client: FlaskClient, db: Database) -> None:
+    fill(db)
+    db.log_decision("login.abhser.com", "block", "lookalike", "192.168.1.20", ts=NOW - 2)
+    response = client.post("/api/allowed", json={"domain": "abhser.com"}, headers=login_headers(client), environ_base=LAN)
+    assert response.status_code == 200
+    assert get(client, "/api/blocked").get_json() == []
+    recent = [e["domain"] for e in get(client, "/api/recent").get_json()]
+    assert recent == ["dns.google", "evil.example"]  # subdomains leave too
+    assert [a["domain"] for a in get(client, "/api/allowed").get_json()["allowed"]] == ["abhser.com"]
+
+
+@pytest.mark.parametrize("query", ["days=0", "days=91", "days=abc", "limit=0", "limit=100001"])
 def test_bad_parameters_are_refused(client: FlaskClient, query: str) -> None:
     path = "/api/stats" if query.startswith("days") else "/api/blocked"
     response = get(client, f"{path}?{query}")
@@ -255,7 +292,8 @@ def test_bad_parameters_are_refused(client: FlaskClient, query: str) -> None:
 
 def test_domains_come_back_as_plain_json_strings(client: FlaskClient, db: Database) -> None:
     # Names are validated before they are logged, but the API must not trust that.
-    db.log_decision("<img src=x onerror=alert(1)>", "block", "model", "dev", ts=NOW)
+    for _ in range(2):
+        db.log_decision("<img src=x onerror=alert(1)>", "block", "model", "dev", ts=NOW)
     response = get(client, "/api/blocked")
     assert response.mimetype == "application/json"
     assert response.get_json()[0]["domain"] == "<img src=x onerror=alert(1)>"
@@ -344,6 +382,16 @@ def test_session_store_keeps_a_bounded_number_of_sessions() -> None:
 )
 def test_dashboard_only_listens_on_local_addresses(host: str, ok: bool) -> None:
     assert (host_problem(host) is None) is ok
+
+
+def test_dashboard_does_not_start_on_every_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    import dataclasses
+
+    import config
+    from api import app as api_app
+
+    monkeypatch.setattr(config, "settings", dataclasses.replace(settings, api_host="0.0.0.0"))
+    assert api_app.main() == 1
 
 
 def test_rate_limiter_forgets_old_events() -> None:

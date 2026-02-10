@@ -171,7 +171,7 @@ def test_doh_lookups_are_logged_but_not_counted_as_threats(db: Database) -> None
     db.log_decision("evil.example", "block", "blacklist", "192.168.1.5", ts=NOW)
     assert [r.domain for r in db.recent_requests()] == ["evil.example", "dns.google"]
     assert [r.domain for r in db.top_blocked()] == ["evil.example"]
-    assert [r.domain for r in db.recent_blocks()] == ["evil.example"]
+    assert [r.domain for r in db.recent_blocks()] == ["evil.example", "dns.google"]  # listed, with its reason
     assert db.daily_stats()[0].blocked == 1
     assert db.doh_count() == 1
     (device,) = db.device_stats()
@@ -201,12 +201,54 @@ def test_device_stats_puts_the_most_targeted_device_first(db: Database) -> None:
     assert rows[0].last_seen == NOW + 5
 
 
-def test_blocked_by_reason_counts_domains_with_their_real_reason(db: Database) -> None:
+def test_blocked_since_counts_hits_with_the_real_reason(db: Database) -> None:
+    db.log_decision("old.example", "block", "model", "dev", ts=NOW - 100)
+    db.log_decision("b.example", "block", "model", "dev", ts=NOW - 50)
     db.log_decision("a.example", "block", "lookalike", "dev", ts=NOW)
     db.log_decision("a.example", "block", "cache", "dev", ts=NOW + 1)
-    db.log_decision("b.example", "block", "model", "dev", ts=NOW)
-    db.log_decision("c.example", "block", "model", "dev", ts=NOW)
-    assert db.blocked_by_reason() == {"lookalike": 1, "model": 2}
+    db.log_decision("b.example", "block", "cache", "dev", ts=NOW + 2)  # its real decision is older
+    db.log_decision("dns.google", "block", "doh", "dev", ts=NOW + 3)
+    db.log_decision("ok.example", "allow", "default", "dev", ts=NOW + 4)
+    rows = {r.domain: (r.hits, r.reason, r.first_seen, r.last_seen) for r in db.blocked_since(NOW)}
+    assert rows == {
+        "a.example": (2, "lookalike", NOW, NOW + 1),
+        "b.example": (1, "model", NOW + 2, NOW + 2),
+        "dns.google": (1, "doh", NOW + 3, NOW + 3),
+    }
+
+
+def test_recent_blocks_show_the_real_reason_of_a_cache_hit(db: Database) -> None:
+    db.log_decision("a.example", "block", "lookalike", "dev", ts=NOW)
+    db.log_decision("a.example", "block", "cache", "dev", ts=NOW + 1)
+    assert [e.reason for e in db.recent_blocks()] == ["lookalike", "lookalike"]
+
+
+def test_device_counts_cover_the_asked_period(db: Database) -> None:
+    db.log_decision("evil.example", "block", "blacklist", "192.168.1.5", ts=NOW - 100)
+    db.log_decision("ok.example", "allow", "default", "192.168.1.6", ts=NOW)
+    assert db.device_count() == 2
+    assert db.device_count(since=NOW) == 1
+    assert [r.device for r in db.device_stats(since=NOW)] == ["192.168.1.6"]
+
+
+def test_old_logs_lose_their_doh_threat_counts(tmp_path: Path) -> None:
+    # Before Phase 9 a DoH lookup was counted as a blocked threat.
+    path = tmp_path / "old.db"
+    db = Database(path)
+    db.log_decision("evil.example", "block", "blacklist", "dev", ts=NOW)
+    db.log_decision("dns.google", "block", "doh", "dev", ts=NOW)
+    db.log_decision("dns.google", "block", "doh", "dev", ts=NOW + 86_400)
+    with db._conn:
+        db._conn.execute("UPDATE stats SET blocked = blocked + 1")
+        db._conn.execute("INSERT INTO stats (day, allowed, blocked) VALUES ('2027-01-16', 0, 1)")
+        db._conn.execute("INSERT INTO blocked_domains VALUES ('dns.google', ?, ?, 2, 'doh')", (NOW, NOW))
+        db._conn.execute("PRAGMA user_version = 1")
+    db.close()
+
+    fixed = Database(path)
+    assert {(d.day, d.blocked) for d in fixed.daily_stats()} == {("2027-01-15", 1), ("2027-01-16", 0)}
+    assert [r.domain for r in fixed.top_blocked()] == ["evil.example"]
+    fixed.close()
 
 
 # ----- sites the owner unblocked -----

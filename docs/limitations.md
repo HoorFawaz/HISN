@@ -129,7 +129,7 @@ Every result figure HISN reports depends on these points. Quote them next to any
   and tab count). There is no phone notification or e-mail; a mobile app for alerts is future work.
 - **Devices are IP addresses.** A device is shown by its address on the network. With DHCP an address
   can move to another device, and phones with private (random) MAC addresses may get a new address.
-- **Daily counts use UTC days.** The chart's days start at 03:00 Saudi time.
+- **Daily counts use UTC days.** The chart, the "today" tiles and the 30-day counts start their days at 03:00 Saudi time; the tables show local times.
 - **One shared admin account.** Everyone who manages the network uses the same password; there are no
   separate users or permissions yet (possible future work). Only its scrypt hash is in the database.
   Sessions are kept in memory, last 8 hours and end when the dashboard restarts; there is no "remember

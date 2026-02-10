@@ -154,11 +154,19 @@ of the page. The plan for that is in [docs/https_block_page.md](docs/https_block
 
 ## Dashboard (Phase 9)
 
-The dashboard shows what HISN blocked: threats blocked over the last 14 days and today, requests per
-day and blocks by reason (Chart.js charts), the latest blocks, the most blocked sites, the targeted
-devices (most blocked threats first) and DoH bypass attempts stopped. When something new was blocked
-since the owner last pressed "OK", an alert banner lists it (the page refreshes every 15 seconds and
-the browser tab shows the count). DoH lookups are logged but are not counted as threats.
+The dashboard shows what HISN blocked on this network: threats blocked over the last 30 days and today,
+requests per day and the breakdown of block reasons (Chart.js charts), the latest blocks, the sites
+blocked more than once, the activity of each device and DoH bypass attempts stopped. When something new
+was blocked since the owner last pressed "OK", an alert banner lists it (the page refreshes every 15
+seconds and the browser tab shows the count).
+
+Everything comes from the decision log of this HISN (`data/hisn.db`, never committed), so a new
+installation starts empty and fills only with the queries of the network it serves. Every count and
+list covers the same period, the retention period of the log (`HISN_LOG_RETENTION_DAYS`, 30 days), so
+the threat tile and the device table always agree and an entry leaves the dashboard when the log forgets
+it. The tables list every row, numbered, and a long table scrolls inside its card. DoH lookups are listed with the label "DoH bypass attempt" but are not counted as threats. The
+chart and the "today" tiles use UTC days; the tables show times in the viewer's own time zone. The reason chart always lists every reason (blacklist, impersonation, model decision,
+DoH), even at zero.
 
 There is one account, the admin, shared by the people who manage the home network; each device signs
 in and out on its own. The pages are in Arabic or English (the ع|E button at the top), in dark or light
@@ -196,10 +204,11 @@ script. "Delete logs" wipes the whole log, like `python -m storage.db delete-all
 the unblocked sites stay.
 
 **Unblocking a site.** If HISN blocked a site by mistake, press "فك الحظر" (Unblock) next to it in
-"Most blocked sites". It is then allowed for every device, even if it is on the blacklist or the rule or
+"Latest blocks" or "Most frequently blocked sites". The site then leaves both lists and moves to
+"Manually allowed sites". It is then allowed for every device, even if it is on the blacklist or the rule or
 the model would block it, and its subdomains too. The DNS server reads the change from the database
 within about 2 seconds, with no restart; devices may keep the block for up to 30 seconds more (the
-block answer's TTL) and browsers a little longer. The "Unblocked sites" card lists these sites with the
+block answer's TTL) and browsers a little longer. The "Manually allowed sites" card lists these sites with the
 reason they had been blocked, and "إعادة الحجب" (Block again) puts the normal checks back. The list is a
 setting, kept when logs are purged or deleted; each unblock and re-block is also logged. DNS-over-HTTPS
 hosts cannot be unblocked this way.

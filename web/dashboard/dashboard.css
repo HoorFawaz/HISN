@@ -174,6 +174,7 @@ button.theme { display: inline-grid; place-items: center; width: 40px; height: 3
 button.theme svg { width: 18px; height: 18px; }
 :root:not([data-theme="light"]) .icon-moon, :root[data-theme="light"] .icon-sun { display: none; }
 .actions { display: grid; gap: 8px; }
+.actions .retention { margin: -2px 0 0; font-size: 0.76rem; text-align: center; direction: var(--dir); }
 /* ع|E: the language in use is highlighted */
 button.lang { direction: ltr; display: inline-flex; padding: 3px; gap: 2px; border-radius: 9px; background: rgba(26, 22, 40, 0.7); border-color: #4a4266; }
 button.lang span { margin: 0; opacity: 1; font-size: 0.85rem; min-width: 30px; padding: 4px 8px; border-radius: 6px; color: var(--muted); }
@@ -295,7 +296,9 @@ code { font-family: Consolas, "Courier New", monospace; background: var(--card-2
 .chart { position: relative; height: 270px; }
 .empty { color: var(--muted); text-align: center; }
 
-.table-wrap { overflow-x: auto; }
+/* Every row is listed; a long table scrolls inside its card, with the header row kept in view. */
+.table-wrap { overflow: auto; max-height: 470px; }
+thead th { position: sticky; top: 0; z-index: 1; background: var(--card); }
 table { width: 100%; min-width: 460px; border-collapse: collapse; font-size: 0.9rem; }
 th, td { text-align: start; padding: 10px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 th { color: var(--muted); font-weight: normal; font-size: 0.8rem; }
@@ -304,11 +307,12 @@ td.domain { font-family: Consolas, "Courier New", monospace; direction: ltr; tex
 td.device { font-family: Consolas, "Courier New", monospace; direction: ltr; text-align: right; white-space: nowrap; }
 td.nowrap { white-space: nowrap; color: var(--muted); font-size: 0.82rem; }
 td.num { font-variant-numeric: tabular-nums; }
+th.num-col, td.num-col { width: 1%; padding-inline-end: 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 td.hot { color: var(--danger); font-weight: 700; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.note { margin: -6px 0 10px; }
 /* The action column stays in view while a wide table scrolls sideways on a phone. */
 .has-action th:last-child, .has-action td:last-child { position: sticky; inset-inline-end: 0; background: var(--card); text-align: end; }
+.has-action thead th:last-child { z-index: 2; }
 .has-action td.empty { position: static; text-align: center; }
 button.small { padding: 3px 10px; font-size: 0.78rem; border-radius: 7px; white-space: nowrap; }
 button.unblock { background: transparent; color: var(--badge-owner); border-color: #3fa874; }
@@ -323,20 +327,41 @@ button.reblock { background: transparent; color: var(--badge-blacklist); border-
 @media (max-width: 1000px) {
   .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .grid.charts { grid-template-columns: 1fr; }
+  /* Smaller screens: the whole scene (moon, palms, fortress) scaled down to fit, never cropped. */
+  .top { background-image: url("/static/banner.svg#scene"), linear-gradient(180deg, #140f2a, #2a1d4a 55%, #5a3354); background-size: contain, auto; background-position: center bottom, 0 0; }
+}
+@media (max-width: 760px) {
+  .top { background-size: 92% auto, auto; background-position: right bottom, 0 0; } /* moon clear of the title */
 }
 @media (max-width: 640px) {
   .top-inner { padding: 16px 14px 46px; }
-  .top { background-position: 70% bottom, 0 0; }
+  .top { background-size: contain, auto; background-position: center bottom 28px, 0 0; } /* just above the first card */
   .top::after { background: linear-gradient(0deg, rgba(18, 15, 29, 0.9), rgba(18, 15, 29, 0.2) 60%); }
   .logo-icon { width: 48px; height: 36px; }
   .wordmark .ruqaa { font-size: 2.1rem; }
   h1 { font-size: 1.25rem; }
-  .tools { order: 2; width: 100%; }
-  .actions { display: flex; flex-wrap: wrap; flex: 1; }
-  .actions button { flex: 1; padding: 7px 10px; }
-  .actions button span { display: none; }
-  .brand { flex-direction: row; margin-inline-start: 0; } /* stacked on phones: logo first */
-  table { min-width: 560px; }
+  /* Same sides as on a laptop: logo on the left with "لوحة حصن" under it, buttons on the right
+     with language and mode above sign-out. */
+  .top-inner { flex-wrap: nowrap; align-items: flex-start; }
+  .brand { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 10px; direction: ltr; margin: 0 auto 0 0; }
+  .brand .wordmark { justify-self: start; }
+  .brand .titles { grid-column: 1 / -1; padding: 0; text-align: left; }
+  .tools { flex-direction: column; align-items: flex-start; }
+  .switches { order: -1; }
+  .actions button { padding: 6px 12px; }
+  /* Tables become one block per row: number, site and button on the first line, the details under them. */
+  table { min-width: 0; }
+  .table-wrap { max-height: 560px; }
+  thead { display: none; }
+  tbody tr { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 10px 2px; border-bottom: 1px solid var(--border); }
+  tbody td { padding: 0; border: 0; }
+  tbody td.domain, tbody td.device:nth-child(2) { flex: 1 1 0; min-width: 0; }
+  tbody td:nth-child(n+3) { order: 2; }
+  .has-action tbody td:last-child { order: 1; position: static; margin-inline-start: auto; }
+  tbody tr::after { content: ""; order: 1; flex-basis: 100%; height: 0; }
+  tbody td[data-label]::before { content: attr(data-label); color: var(--muted); font-size: 0.74rem; margin-inline-end: 5px; font-weight: 400; font-family: "HISN Sans", sans-serif; }
+  tbody td.empty { flex-basis: 100%; }
+  tbody td.device[data-label] { direction: inherit; }
   .alert { flex-direction: column; }
   main { padding: 0 12px 20px; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }

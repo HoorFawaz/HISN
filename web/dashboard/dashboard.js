@@ -29,7 +29,6 @@
   let lang = store.get("localStorage", LANG_KEY) === "en" ? "en" : "ar";
   let theme = store.get("localStorage", THEME_KEY) === "light" ? "light" : "dark";
   let token = store.get("sessionStorage", TOKEN_KEY);
-  let username = "";
   let timer = null;
   let dailyChart = null;
   let reasonChart = null;
@@ -163,15 +162,11 @@
     }
   }
 
-  // "Unblock" next to a blocked site, or a green badge when the admin already allowed it.
-  function actionCell(domain, allowed) {
+  // "Unblock" next to a blocked site. Unblocked sites leave the blocked lists (the API leaves
+  // them out); a DoH server cannot be unblocked, so its row has no button.
+  function actionCell(domain, reason) {
     const td = document.createElement("td");
-    if (allowed.has(domain)) {
-      const badge = document.createElement("span");
-      badge.className = "badge owner";
-      badge.textContent = t("allowed_badge");
-      td.append(badge);
-    } else {
+    if (reason !== "doh") {
       td.append(smallButton("unblock", t("unblock"), () =>
         changeAllowed("/api/allowed", domain, t("confirm_unblock", { domain }))));
     }
@@ -185,6 +180,7 @@
     return td;
   }
 
+  // Rows are numbered 1, 2, 3... in the first column.
   function fillTable(id, rows, makeCells, emptyKey) {
     const body = $(id);
     body.replaceChildren();
@@ -196,11 +192,16 @@
       body.append(tr);
       return;
     }
-    for (const row of rows) {
+    // Column names, shown before each detail on phones (where the header row is hidden).
+    const names = [...body.closest("table").querySelectorAll("thead th")].map((th) => th.textContent.trim());
+    rows.forEach((row, index) => {
       const tr = document.createElement("tr");
-      tr.append(...makeCells(row));
+      tr.append(cell(numberFormat.format(index + 1), "num-col"), ...makeCells(row));
+      [...tr.children].forEach((td, i) => {
+        if (i >= 2 && names[i] && td.textContent && !td.querySelector(".badge, button")) td.dataset.label = names[i];
+      });
       body.append(tr);
-    }
+    });
   }
 
   const when = (ts) => timeFormat.format(new Date(ts * 1000));
@@ -236,10 +237,12 @@
     });
   }
 
+  // Every reason HISN uses is listed, even at zero (so "Model decision" shows before the model blocks anything).
   function drawReasons(byReason) {
-    const keys = Object.keys(byReason).filter((k) => byReason[k] > 0);
-    $("reason-empty").hidden = keys.length > 0;
-    $("reason-chart").hidden = keys.length === 0;
+    const keys = Object.keys(byReason);
+    const any = keys.some((k) => byReason[k] > 0);
+    $("reason-empty").hidden = any;
+    $("reason-chart").hidden = !any;
     const colors = { blacklist: "--reason-blacklist", lookalike: "--reason-lookalike", model: "--reason-model" };
     const data = {
       labels: keys.map(reasonText),
@@ -271,7 +274,7 @@
 
   function showAlert(recent) {
     const lastSeen = Number(store.get("localStorage", SEEN_KEY) || 0);
-    const fresh = recent.filter((e) => e.id > lastSeen);
+    const fresh = recent.filter((e) => e.id > lastSeen && e.reason !== "doh");  // DoH is not a threat
     document.title = fresh.length ? `(${fresh.length}) ${t("page_title")}` : t("page_title");
     if (!fresh.length) {
       $("alert").hidden = true;
@@ -296,18 +299,17 @@
   // ----- data -----
 
   async function refresh() {
-    const [stats, blocked, devices, recent, owner, me] = await Promise.all([
-      api("/api/stats?days=14"),
-      api("/api/blocked?limit=20"),
-      api("/api/devices?limit=20"),
-      api("/api/recent?limit=10"),
+    const [stats, blocked, devices, recent, owner] = await Promise.all([
+      // Every list covers the retention period of the log (30 days by default) with no row limit.
+      api("/api/stats"),
+      api("/api/blocked"),
+      api("/api/devices"),
+      api("/api/recent"),
       api("/api/allowed"),
-      api("/api/me"),
     ]);
-    username = me.username;
-    const allowed = new Set(owner.allowed.map((a) => a.domain));
 
     $("t-blocked").textContent = numberFormat.format(stats.totals.blocked);
+    $("t-period").textContent = t("last_days", { days: stats.days });
     $("t-today").textContent = numberFormat.format(stats.today.blocked);
     $("t-allowed").textContent = numberFormat.format(stats.today.allowed);
     $("t-doh").textContent = numberFormat.format(stats.doh_blocked);
@@ -317,12 +319,13 @@
     drawReasons(stats.by_reason);
 
     fillTable("recent-rows", recent, (e) => [
-      cell(when(e.ts), "nowrap"), cell(e.domain, "domain"), reasonCell(e.reason), cell(e.device, "device"),
+      cell(e.domain, "domain"), reasonCell(e.reason), cell(e.device, "device"), cell(when(e.ts), "nowrap"),
+      actionCell(e.domain, e.reason),
     ], "nothing_recent");
     fillTable("blocked-rows", blocked, (r) => [
-      cell(r.domain, "domain"), cell(numberFormat.format(r.hits), "num"), reasonCell(r.reason), cell(when(r.last_seen), "nowrap"),
-      actionCell(r.domain, allowed),
-    ], "nothing_blocked");
+      cell(r.domain, "domain"), reasonCell(r.reason), cell(numberFormat.format(r.hits), "num"), cell(when(r.last_seen), "nowrap"),
+      actionCell(r.domain, r.reason),
+    ], "nothing_repeated");
     fillTable("allowed-rows", owner.allowed, (a) => [
       cell(a.domain, "domain"), a.was_reason ? reasonCell(a.was_reason) : cell("—"), cell(when(a.added_at), "nowrap"),
       reblockCell(a.domain),
@@ -333,11 +336,8 @@
     ], "nothing_devices");
 
     showAlert(recent);
-    $("updated").textContent = t("updated", {
-      user: username,
-      time: timeFormat.format(new Date()),
-      days: stats.retention_days,
-    });
+    $("retention").textContent = t("retention", { days: stats.retention_days });
+    $("updated").hidden = true;
   }
 
   // ----- screens -----
@@ -348,7 +348,7 @@
     $("actions").hidden = id !== "dashboard";
     if (id !== "dashboard") {
       clearInterval(timer);
-      $("updated").textContent = "";
+      $("updated").hidden = true;
     }
   }
 
@@ -399,7 +399,10 @@
     timer = setInterval(() => {
       refresh().catch((err) => {
         if (err instanceof AuthError) showLogin(t("err_signed_out"));
-        else $("updated").textContent = t("err_update", { msg: err.message });
+        else {
+          $("updated").textContent = t("err_update", { msg: err.message });
+          $("updated").hidden = false;
+        }
       });
     }, REFRESH_MS);
   }

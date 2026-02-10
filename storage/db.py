@@ -30,13 +30,14 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: DoH lookups taken out of the threat counts of older logs
 SECONDS_PER_DAY = 86_400
-MAX_LIMIT = 1_000  # upper bound for any "give me N rows" call
+MAX_LIMIT = 100_000  # upper bound for any "give me N rows" call
 # A DNS-over-HTTPS lookup answered NXDOMAIN (Phase 7) is logged, but it is not a
-# threat: it stays out of the daily totals, the blocked-domain list and the
-# dashboard's threat counts.
+# threat: it stays out of the daily totals, the blocked-domain table and every
+# threat count. The dashboard shows it with its own label ("DoH bypass attempt").
 DOH_REASON = "doh"
+CACHE_REASON = "cache"
 
 
 @dataclass(frozen=True)
@@ -135,8 +136,34 @@ class Database:
 
     def _create_schema(self) -> None:
         with self._lock, self._conn:
+            (version,) = self._conn.execute("PRAGMA user_version").fetchone()
             self._conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+            if version < 2:
+                self._remove_old_doh_counts()
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")  # constant, not input
+
+    def _remove_old_doh_counts(self) -> None:
+        """Logs written before Phase 9 counted DoH lookups as blocked threats; take them out.
+
+        The blocked-domain table loses its DoH rows, and the daily totals of the
+        days still in the request log are counted again from it.
+        """
+        self._conn.execute("DELETE FROM blocked_domains WHERE reason = ?", (DOH_REASON,))
+        rows = self._conn.execute("SELECT ts, verdict, reason FROM requests").fetchall()
+        if not rows:
+            return
+        first_day = min(_day(ts) for ts, _, _ in rows)
+        # Days already in the totals start from zero: a day with only DoH lookups has no threats.
+        days = {day: [0, 0] for (day,) in self._conn.execute("SELECT day FROM stats WHERE day >= ?", (first_day,))}
+        for ts, verdict, reason in rows:
+            if reason != DOH_REASON:
+                days.setdefault(_day(ts), [0, 0])[0 if verdict == "allow" else 1] += 1
+        for day, (allowed, blocked) in days.items():
+            self._conn.execute(
+                "INSERT INTO stats (day, allowed, blocked) VALUES (?, ?, ?) "
+                "ON CONFLICT(day) DO UPDATE SET allowed = excluded.allowed, blocked = excluded.blocked",
+                (day, allowed, blocked),
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -315,39 +342,68 @@ class Database:
         return [BlockedRow(*row) for row in rows]
 
     def recent_blocks(self, after_id: int = 0, limit: int = 20) -> list[BlockEvent]:
-        """Blocked threats newest first; only those with an id above ``after_id`` (for alerts)."""
+        """Blocks newest first, DoH lookups included; only ids above ``after_id`` (for alerts).
+
+        A cache hit carries the reason of the decision it repeats.
+        """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id, ts, domain, reason, device FROM requests "
-                "WHERE verdict = 'block' AND reason != ? AND id > ? ORDER BY id DESC LIMIT ?",
-                (DOH_REASON, int(after_id), _clamp(limit)),
+                "SELECT r.id, r.ts, r.domain, "
+                "CASE WHEN r.reason = ? THEN COALESCE(b.reason, r.reason) ELSE r.reason END, r.device "
+                "FROM requests r LEFT JOIN blocked_domains b ON b.domain = r.domain "
+                "WHERE r.verdict = 'block' AND r.id > ? ORDER BY r.id DESC LIMIT ?",
+                (CACHE_REASON, int(after_id), _clamp(limit)),
             ).fetchall()
         return [BlockEvent(*row) for row in rows]
 
-    def device_stats(self, limit: int = 20) -> list[DeviceRow]:
-        """Requests and blocked threats per device, most targeted first."""
+    def blocked_since(self, since: int) -> list[BlockedRow]:
+        """Every domain blocked since ``since`` (DoH lookups included), with its hits in that period.
+
+        The reason is the latest real one: a cache hit repeats an earlier decision,
+        so it takes the reason of that decision.
+        """
+        with self._lock:
+            events = self._conn.execute(
+                "SELECT domain, ts, reason FROM requests WHERE verdict = 'block' AND ts >= ? ORDER BY id",
+                (int(since),),
+            ).fetchall()
+            stored = dict(self._conn.execute("SELECT domain, reason FROM blocked_domains").fetchall())
+        rows: dict[str, list] = {}
+        for domain, ts, reason in events:
+            row = rows.setdefault(domain, [domain, 0, ts, ts, None])
+            row[1] += 1
+            row[3] = ts
+            if reason != CACHE_REASON:
+                row[4] = reason
+        return [
+            BlockedRow(domain, hits, first, last, reason or stored.get(domain, CACHE_REASON))
+            for domain, hits, first, last, reason in rows.values()
+        ]
+
+    def device_stats(self, limit: int = 20, since: int = 0) -> list[DeviceRow]:
+        """Requests and blocked threats per device since ``since``, most targeted first."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT device, COUNT(*), "
                 "SUM(CASE WHEN verdict = 'block' AND reason != ? THEN 1 ELSE 0 END), MAX(ts) "
-                "FROM requests GROUP BY device ORDER BY 3 DESC, 2 DESC LIMIT ?",
-                (DOH_REASON, _clamp(limit)),
+                "FROM requests WHERE ts >= ? GROUP BY device ORDER BY 3 DESC, 2 DESC LIMIT ?",
+                (DOH_REASON, int(since), _clamp(limit)),
             ).fetchall()
         return [DeviceRow(*row) for row in rows]
 
-    def blocked_by_reason(self) -> dict[str, int]:
-        """Number of distinct blocked domains per reason (the real reason, never ``cache``)."""
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT reason, COUNT(*) FROM blocked_domains GROUP BY reason"
-            ).fetchall()
-        return {reason: count for reason, count in rows}
-
-    def doh_count(self) -> int:
-        """DNS-over-HTTPS lookups answered NXDOMAIN within the retention period."""
+    def device_count(self, since: int = 0) -> int:
+        """Devices that sent at least one request since ``since``."""
         with self._lock:
             (count,) = self._conn.execute(
-                "SELECT COUNT(*) FROM requests WHERE reason = ?", (DOH_REASON,)
+                "SELECT COUNT(DISTINCT device) FROM requests WHERE ts >= ?", (int(since),)
+            ).fetchone()
+        return int(count)
+
+    def doh_count(self, since: int = 0) -> int:
+        """DNS-over-HTTPS lookups answered NXDOMAIN since ``since``."""
+        with self._lock:
+            (count,) = self._conn.execute(
+                "SELECT COUNT(*) FROM requests WHERE reason = ? AND ts >= ?", (DOH_REASON, int(since))
             ).fetchone()
         return int(count)
 
