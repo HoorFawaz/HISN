@@ -6,6 +6,10 @@
 # real site looks like an impersonation to the model.
 # Re-check every entry before release.
 absher.sa
+# Absher Government (أبشر حكومة), the government-sector side of Absher, confirmed by the
+# project owner on 2026-10-19 (not independently verified). It was blacklisted by
+# mistake on 2026-10-18.
+abshergov.sa
 alrajhibank.com.sa
 # Al Rajhi group companies, confirmed by the project owner on 2026-10-17 from
 # their own pages (not independently verified): takaful (insurance), capital, tadawul.

@@ -196,3 +196,38 @@ def test_training_without_ages_reports_none(files: dict[str, Path]) -> None:
     assert bundle["age_table"] is None
     result = evaluate(files["dataset"], files["model"], files["brands"], files["whitelist"], 0.5)
     assert result["age"] is None
+
+
+def test_demo_names_are_blocked_only_by_the_model(files: dict[str, Path], tmp_path: Path) -> None:
+    from ml.demo_names import pick
+    from ml.lookalike import LookalikeChecker
+
+    run_train(files)
+    blacklist = write_list(tmp_path / "blacklist.txt", ["listed-example.com"])
+    blocked, allowed = pick(
+        files["dataset"], files["model"], files["brands"], files["whitelist"], blacklist, 0.5, 3
+    )
+    test_rows = load_dataset(files["dataset"])
+    test_rows = test_rows[test_rows["split"] == "test"]
+    malicious = set(test_rows[test_rows["label"] == 1]["host"])
+    benign = set(test_rows[test_rows["label"] == 0]["host"])
+    checker = LookalikeChecker(frozenset(BRANDS), frozenset(WHITELIST))
+    assert blocked and allowed
+    assert len(blocked) <= 3 and len(allowed) <= 3
+    assert all(host in malicious and p >= 0.5 and checker.check(host) is None for host, p in blocked)
+    assert all(host in benign and p < 0.5 for host, p in allowed)
+
+
+def test_demo_names_command(
+    files: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from ml import demo_names
+
+    run_train(files)
+    patched = replace(demo_names.settings, brands_path=files["brands"], whitelist_path=files["whitelist"])
+    monkeypatch.setattr(demo_names, "settings", patched)
+    args = ["--dataset", str(files["dataset"]), "--model", str(files["model"]), "--threshold", "0.5"]
+    assert demo_names.main(args) == 0
+    output = capsys.readouterr().out
+    assert "only the model blocks" in output and "only through HISN" in output
+    assert demo_names.main(["--dataset", str(files["dataset"]), "--model", str(files["dataset"].parent / "none")]) == 1

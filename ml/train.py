@@ -18,7 +18,7 @@ What goes in:
   They are not forest features: the train rows with an age build the age
   table (``ml/age_table.py``) that adjusts the forest's probability.
 
-The classes are very unbalanced (about 1 malicious to 43 benign), so the forest
+The classes are very unbalanced (about 1 malicious to 23 benign), so the forest
 uses ``class_weight="balanced_subsample"``: each tree weighs the rare class up
 instead of learning "always say benign".
 

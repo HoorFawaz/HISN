@@ -283,3 +283,25 @@ def test_shared_platforms_are_not_picked(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert fetch_domain_age.read_domains(dataset) == {0: {"example.org"}, 1: {"bad-shop.com"}}
+
+
+def test_fetch_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    class Client:
+        def __init__(self, timeout: float) -> None:
+            pass
+
+        def registration_date(self, domain: str) -> datetime | None:
+            return datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(fetch_domain_age, "RdapClient", Client)
+    monkeypatch.setattr(fetch_domain_age.time, "sleep", lambda _: None)
+    dataset, out = tmp_path / "dataset.csv", tmp_path / "ages.csv"
+    paths = ["--dataset", str(dataset), "--out", str(out)]
+
+    assert fetch_domain_age.main(paths) == 1  # no dataset yet
+    dataset.write_text("host,label,split\nlogin.bad-shop.com,1,train\nwww.example.org,0,train\n", encoding="utf-8")
+    assert fetch_domain_age.main([*paths, "--max-lookups", "0"]) == 1
+    assert fetch_domain_age.main(paths) == 0
+    assert fetch_domain_age.read_done(out) == {"bad-shop.com", "example.org"}
+    assert fetch_domain_age.main(paths) == 0  # nothing left to look up
+    assert "already has an answer" in capsys.readouterr().out

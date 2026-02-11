@@ -115,7 +115,7 @@ def test_engine_loads_the_shipped_lists() -> None:
     assert engine.decide("absher.sa").verdict is Verdict.ALLOW
     assert engine.decide("absher.sa.fake-login.com").reason is not Reason.WHITELIST  # the brief's test case
     assert engine.decide("absher-sa.com").blocked
-    assert engine.decide("www.abshergov.sa").reason is Reason.BLACKLIST
+    assert engine.decide("www.abshergov.sa").reason is Reason.WHITELIST
     assert engine.decide("lms.ksu.edu.sa").reason is Reason.WHITELIST
     assert engine.decide("edu.sa.fake-login.com").reason is not Reason.WHITELIST
 

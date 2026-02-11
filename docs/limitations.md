@@ -9,8 +9,8 @@ Every result figure HISN reports depends on these points. Quote them next to any
   most legitimate sites, but some noise remains in both directions.
 - **Benign names have no dates.** Only the malicious side is split by time. Benign names are split
   at random with the same ratio, so the test set does not show how benign traffic changes over time.
-- **Class ratio about 1:43** (4,606 malicious, 200,000 benign). Accuracy is meaningless here
-  ("allow everything" scores over 97%), so only precision, recall and the confusion matrix are reported.
+- **Class ratio about 1:23** (8,644 malicious, 200,000 benign). Accuracy is meaningless here
+  ("allow everything" scores about 96%), so only precision, recall and the confusion matrix are reported.
 - **IP-address URLs are out of scope.** A DNS filter only sees names, so feed reports that use a bare
   IP address are dropped.
 - **Feed names do not look like Saudi brands.** Phishing feeds are mostly random-looking names, so
@@ -50,9 +50,9 @@ Every result figure HISN reports depends on these points. Quote them next to any
 - **The rule blocks on its own.** `typo` matches (one or two letters away from a brand) block without the
   model, so a legitimate name close to a brand (for example `asher.com` for `absher`) is blocked until it
   is added to the whitelist. `contains` matches do not block on their own by default.
-- **Blocking threshold.** 0.90 favours precision: on the first Phase 4 run (before the look-alike
-  features) it gave precision 0.96 and recall 0.15 on the temporal test split, so most phishing names
-  that only the model could catch are still allowed. The look-alike rule and the blacklist carry most of
+- **Blocking threshold.** 0.90 favours precision: on the current model it gives precision 0.933 and
+  recall 0.184 on the temporal test split (319 of 1,729 phishing names caught, 23 of 40,000 benign names
+  blocked), so most phishing names that only the model could catch are still allowed. The look-alike rule and the blacklist carry most of
   the protection. Re-check the threshold table in `python -m ml.evaluate` after every retraining.
 - **Cached verdicts.** A verdict lasts up to one hour. A name that becomes dangerous within that hour, or
   a wrong block, stays as it was until the entry expires or the server restarts. The whitelist and
@@ -93,6 +93,16 @@ Every result figure HISN reports depends on these points. Quote them next to any
   Registries may rate-limit a busy network; a refused lookup simply means "age unknown" for an hour.
 - **The age can be faked only by waiting.** Attackers can register domains early and use them later
   ("aged domains"); the age then gives no warning.
+
+## Using HISN on a real network
+
+- **One point of failure.** When every device uses HISN as its only DNS server, the network has no
+  internet while the HISN computer is off, asleep or restarting. A second DNS server in the router
+  would avoid that but lets devices skip HISN, so none is set.
+- **The router must allow it.** Protecting the whole home needs a router whose DHCP settings can hand
+  out HISN's address as the DNS server; some internet-provider routers lock this.
+- **Devices can opt out.** A device with a manually set DNS server, a VPN, or Android "Private DNS"
+  set to a provider's hostname does not ask HISN.
 
 ## DNS-over-HTTPS blocking (Phase 7)
 

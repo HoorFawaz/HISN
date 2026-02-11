@@ -4,7 +4,12 @@ Network-level protection against phishing and fake websites. HISN acts as the DN
 server of a home network: every domain request is checked, and dangerous domains
 are answered with the address of a block page.
 
-> Status: Phase 9 (DNS server with lists, verdict cache and decision log; dataset, domain features, look-alike handling, model training and evaluation; the look-alike rule and the model decide unknown names in the server; the model also uses the domain age when it is known; DNS-over-HTTPS servers get NXDOMAIN so browsers cannot bypass HISN; a block page explains why a site was blocked; a dashboard shows blocked threats, targeted devices and alerts). See the project brief for the full roadmap.
+> Status: complete (Phase 10). A DNS server with lists, a verdict cache and a decision log; a look-alike
+> rule and a Random Forest (with a domain-age table) decide unknown names; DNS-over-HTTPS servers get
+> NXDOMAIN so browsers cannot bypass HISN; a block page explains each block; a dashboard shows threats,
+> devices and alerts and lets the owner unblock sites. How it fits together:
+> [docs/architecture.md](docs/architecture.md). How to show it: [docs/demo.md](docs/demo.md).
+> Results: [Results](#results).
 
 ## Setup
 
@@ -29,7 +34,8 @@ Expected output: `127.0.0.1 5353`.
 python -m dns_server.server
 ```
 
-It listens on `127.0.0.1:5353` (UDP and TCP). Port 5353 needs no admin rights; port 53 is only for the real demo.
+It listens on `127.0.0.1:5353` (UDP and TCP). Port 5353 needs no admin rights; port 53 is only for real use,
+see [Use HISN for real](#use-hisn-for-real).
 Stop it with `Ctrl+C`. If another program already uses port 5353, set `HISN_DNS_PORT` to a free port in `.env`.
 
 Query it from a second terminal (works on every OS):
@@ -224,6 +230,73 @@ Chart.js 4.4.7 is bundled in `web/dashboard/vendor/` (MIT license next to it) an
 in `web/dashboard/fonts/` (SIL Open Font License, `OFL.txt` next to it), so the dashboard needs no internet.
 The header art (`web/dashboard/banner.svg`) is an original drawing made for HISN.
 
+## Use HISN for real
+
+Everything above runs on test ports, so the browser never asks HISN: a device sends its DNS lookups to
+port 53 of the DNS server it was given (usually the router). To block sites while browsing, choose one
+of two set-ups. Both need the DNS server on port 53 and the block page on port 80, which needs admin
+rights (Windows: PowerShell "Run as administrator"; Linux: `sudo .venv/bin/python -m ...`).
+
+### Option A: one computer
+
+Only the computer that runs HISN is protected. Good for trying it out and for a demo.
+
+1. In `.env` set `HISN_DNS_PORT=53` (keep `HISN_DNS_HOST=127.0.0.1` and `HISN_BLOCK_PAGE_IP=127.0.0.1`).
+2. As admin, start the DNS server and, in a second window, the block page:
+
+   ```bash
+   python -m dns_server.server
+   ```
+
+   ```bash
+   python -m web.block_page.app
+   ```
+
+3. Point this computer's DNS at HISN.
+   - Windows 11: Settings > Network & internet > Wi-Fi or Ethernet > DNS server assignment > Edit >
+     Manual. Turn IPv4 on with preferred DNS `127.0.0.1` and leave IPv6 off.
+   - macOS: System Settings > Network > (connection) > Details > DNS, replace the list with `127.0.0.1`.
+4. Clear the old answers, then restart the browser:
+
+   ```bash
+   ipconfig /flushdns
+   ```
+
+   (macOS: `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`.)
+5. In the browser settings, turn off "Use secure DNS" if it is set to a fixed provider.
+6. Open `http://absher-sa.com`: the HISN block page appears. An `https://` link shows a certificate
+   warning instead, which still means the site was blocked.
+
+To stop, set the computer's DNS back to automatic **before** stopping HISN, or it has no internet.
+
+### Option B: the whole home network
+
+Every device that joins the Wi-Fi uses HISN, with nothing to set on the devices. HISN should run on a
+computer that is always on (for example a Raspberry Pi): if it is off, the whole home has no internet.
+
+1. In the router, give the HISN computer a fixed address (DHCP reservation), for example `192.168.1.50`.
+2. In `.env` on that computer, use that address so other devices can reach HISN:
+
+   ```ini
+   HISN_DNS_HOST=192.168.1.50
+   HISN_DNS_PORT=53
+   HISN_BLOCK_PAGE_IP=192.168.1.50
+   ```
+
+   `HISN_ALLOWED_NETWORKS` already includes the usual home ranges; only these answer.
+3. Allow incoming UDP and TCP port 53 and TCP port 80 on the private network. On Windows, choose
+   "Private networks" when the firewall asks the first time HISN starts.
+4. Start the DNS server and the block page as in option A (as admin).
+5. In the router's LAN / DHCP settings, set the primary DNS server to `192.168.1.50` and leave the
+   secondary DNS empty: devices use either one, so a public secondary lets them skip HISN. If the
+   router also hands out an IPv6 DNS server, turn that off as well.
+6. Reconnect the devices (or restart the Wi-Fi) so they get the new DNS server.
+
+Some internet-provider routers do not allow changing the DNS server; then this option needs a
+different router or HISN acting as the DHCP server (not built). A device using a VPN, or Android
+"Private DNS" set to a provider's hostname, can still skip HISN; see [docs/limitations.md](docs/limitations.md).
+The dashboard stays on `127.0.0.1:8080` (the HISN computer only) unless `HISN_API_HOST` is changed.
+
 ## Logs and privacy
 
 Every decision is stored in a local SQLite file (`data/hisn.db`, never committed): time, domain,
@@ -324,8 +397,11 @@ python -m ml.evaluate
 It prints separate results: precision, recall and the confusion matrix on the newest phishing
 names (the temporal test split, scored on the name alone), the model's recall on look-alikes of held-out brands, by brand and
 by technique, and the rule's recall plus how many benign test names it wrongly flags. Accuracy is not
-shown: with about 1 malicious name per 43 benign ones it says nothing. `--threshold 0.6` tries another
+shown: with about 1 malicious name per 23 benign ones it says nothing. `--threshold 0.6` tries another
 blocking threshold (default `HISN_MODEL_THRESHOLD`).
+
+For a demo, `python -m ml.demo_names` prints new phishing names from the test split that only the model
+blocks (no list or rule covers them) and benign names it allows; see [docs/demo.md](docs/demo.md).
 
 To also test a trick the model never saw, hold a technique out of training:
 
@@ -370,6 +446,46 @@ runs without a model until you retrain.
 **Every number depends on labels nobody reviewed and on generated look-alikes.** Read
 [docs/limitations.md](docs/limitations.md) before quoting one. A larger brand list is proposed in
 [docs/brand_list_proposal.md](docs/brand_list_proposal.md); its domains must be confirmed first.
+
+## Results
+
+From `python -m ml.evaluate` on the project owner's computer (dataset: 8,644 malicious and 200,000
+benign names; test split: the newest 1,729 malicious names and 40,000 benign names, never used in
+training). **Every figure depends on unreviewed labels and generated look-alikes; read
+[docs/limitations.md](docs/limitations.md) first.**
+
+| What was measured | Result |
+| --- | --- |
+| Model on new phishing names, name only, threshold 0.90 | precision 0.933, recall 0.184 (319 of 1,729 caught, 23 of 40,000 benign blocked) |
+| Same, whole precision-recall curve | average precision 0.432 |
+| Model on look-alikes of brands it never saw (alinma, nafath) | 168 of 213 caught (78.9%) |
+| Look-alike rule on generated look-alikes of every brand | 639 of 639 caught (100%) |
+| Look-alike rule on benign test names | 0 of 40,000 wrongly flagged |
+| Model on test names with a known domain age | recall 0.356 with the age vs 0.184 on the name alone (precision 0.988 vs 0.978) |
+
+Other thresholds on the same test split:
+
+| Threshold | Precision | Recall | Benign blocked (of 40,000) |
+| --- | --- | --- | --- |
+| 0.70 | 0.702 | 0.318 | 234 |
+| 0.80 | 0.846 | 0.255 | 80 |
+| 0.90 (default) | 0.933 | 0.184 | 23 |
+| 0.95 | 0.976 | 0.138 | 6 |
+
+What this means:
+
+- **Look-alikes of Saudi brands** are HISN's main target, and the rule catches all generated ones
+  without flagging benign names. The rule and the generator were written together, so that 100% is a
+  sanity check; the 0 false positives are the meaningful number. Real attacks seen in the wild were
+  not available to test (the phishing feed used had no reports for these brands when checked).
+- **Generic phishing names** are hard to spot from the name alone: at 0.90 the model blocks about one
+  in five, and almost never a benign name. The threshold favours not breaking legitimate sites;
+  the table shows the cost of moving it.
+- **Domain age** helps: phishing domains are young (median 24 days, 51% under 30 days) and benign ones
+  old (median 4,582 days). Where the age is known, recall almost doubles. It is looked up in the
+  background, so the first answer for a new name uses the name alone.
+- **Omission** look-alikes (a missing letter, such as `ainma.sa`) are the model's weak spot (10 of 32
+  caught); the rule catches them.
 
 ## Run the tests
 

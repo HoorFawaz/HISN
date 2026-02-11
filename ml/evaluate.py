@@ -10,8 +10,8 @@ Four separate results, because they answer different questions:
    phishing names, which the model never saw, scored on the name alone (as the
    DNS server does before a domain's age is known). Precision, recall and the
    confusion matrix at the blocking threshold, plus a small threshold table.
-   Accuracy is not reported: with about 1 malicious name per 43 benign ones,
-   "allow everything" already scores over 97%.
+   Accuracy is not reported: with about 1 malicious name per 23 benign ones,
+   "allow everything" already scores about 96%.
 2. **Held-out look-alikes**: synthetic look-alikes of brands (and techniques)
    kept out of training, split by brand and by technique. Every name here is
    malicious, so only recall means anything; precision comes from part 1 and 3.
