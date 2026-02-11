@@ -8,7 +8,7 @@ Python · scikit-learn · Flask · SQLite · Arabic and English
 
 </div>
 
-![The HISN dashboard in Arabic, dark mode](docs/images/dashboard.png)
+![The HISN dashboard, dark mode](docs/images/dashboard.png)
 
 Someone at home taps a link in a text message: `alrajhi-bank.com`, "your account is suspended". The
 page looks exactly like the bank. HISN never lets it open. The phone gets HISN's own page instead,
@@ -81,8 +81,6 @@ Two more things HISN does quietly:
 
 ## The block page
 
-<img src="docs/images/block-phone.png" alt="The block page on a phone" width="260" align="right">
-
 Every blocked site leads here, on any device:
 
 - the blocked name and the reason, in Arabic and English;
@@ -91,10 +89,10 @@ Every blocked site leads here, on any device:
 - a **Back to safety** button.
 
 The page runs no script and never reads what a phishing form sends to it. It works for links typed or
-opened as `http://`; an `https://` link shows the browser's certificate warning instead, which still
-keeps the user away (see [docs/https_block_page.md](docs/https_block_page.md)).
+opened as `http://`; an `https://` link ends in the browser's "site can't be reached" error instead.
+Either way the fake site never loads (see [docs/https_block_page.md](docs/https_block_page.md)).
 
-<br clear="right">
+![The full block page for alrajhi-bank.com: the reason, what to do, and the Back to safety button](docs/images/block-page.png)
 
 ## The dashboard
 
@@ -112,9 +110,9 @@ dashboard refreshes every 15 seconds and covers the last 30 days:
 
 ![A site the owner unblocked, with Block again, and the activity of each device](docs/images/dashboard-allowed-devices.png)
 
-| English, light mode | Phone | Sign-in |
+| Light mode | Phone | Sign-in |
 | --- | --- | --- |
-| ![Dashboard in English, light mode](docs/images/dashboard-light-en.png) | ![Dashboard on a phone](docs/images/dashboard-phone.png) | ![Dashboard sign-in](docs/images/login.png) |
+| ![Dashboard in light mode](docs/images/dashboard-light-en.png) | ![Dashboard on a phone](docs/images/dashboard-phone.png) | ![Dashboard sign-in](docs/images/login.png) |
 
 ## Results
 
@@ -297,7 +295,7 @@ A DoH server set up by its IP address, a browser where the user forced DoH on, a
 
 ## Block page
 
-<img src="docs/images/block-page.png" alt="The full block page" width="420" align="right">
+<img src="docs/images/block-phone.png" alt="The block page on a phone" width="260" align="right">
 
 A blocked name resolves to `HISN_BLOCK_PAGE_IP`, so the browser lands on the block page instead of
 the real site. Run it in a second terminal, next to the DNS server:
@@ -441,8 +439,8 @@ Only the computer that runs HISN is protected. Good for trying it out and for a 
 
    (macOS: `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`.)
 5. In the browser settings, turn off "Use secure DNS" if it is set to a fixed provider.
-6. Open `http://absher-sa.com`: the HISN block page appears. An `https://` link shows a certificate
-   warning instead, which still means the site was blocked.
+6. Open `http://absher-sa.com`: the HISN block page appears. An `https://` link shows the browser's
+   "site can't be reached" error instead, which still means the site was blocked.
 
 To stop, set the computer's DNS back to automatic **before** stopping HISN, or it has no internet.
 

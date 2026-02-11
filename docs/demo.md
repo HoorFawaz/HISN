@@ -49,8 +49,8 @@ Open the dashboard at `http://127.0.0.1:8080/` in one tab and sign in.
 
 ## Show it
 
-Type each name in the address bar as `http://name` (an `https://` link shows a browser certificate
-warning instead of the block page, which still means it was blocked; see
+Type each name in the address bar as `http://name` (an `https://` link shows the browser's "site
+can't be reached" error instead of the block page, which still means it was blocked; see
 [https_block_page.md](https_block_page.md)).
 
 | # | Open | What happens | Why (decision step) |
