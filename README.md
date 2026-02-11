@@ -11,6 +11,18 @@ are answered with the address of a block page.
 > [docs/architecture.md](docs/architecture.md). How to show it: [docs/demo.md](docs/demo.md).
 > Results: [Results](#results).
 
+## Screenshots
+
+Taken with demo data (made-up devices and blocks), not a real home network.
+
+| Dashboard (Arabic, dark) | Dashboard (English, light) |
+| --- | --- |
+| ![Dashboard in Arabic, dark mode](docs/images/dashboard.png) | ![Dashboard in English, light mode](docs/images/dashboard-light-en.png) |
+
+| Block page | Sign-in | Phone |
+| --- | --- | --- |
+| ![Block page for absher-sa.com](docs/images/block-page.png) | ![Dashboard sign-in](docs/images/login.png) | ![Dashboard on a phone](docs/images/dashboard-phone.png) |
+
 ## Setup
 
 ```bash
