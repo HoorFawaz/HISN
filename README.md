@@ -1,27 +1,188 @@
-# HISN (حصن)
+<div align="center">
 
-Network-level protection against phishing and fake websites. HISN acts as the DNS
-server of a home network: every domain request is checked, and dangerous domains
-are answered with the address of a block page.
+# HISN · حصن
 
-> Status: complete (Phase 10). A DNS server with lists, a verdict cache and a decision log; a look-alike
-> rule and a Random Forest (with a domain-age table) decide unknown names; DNS-over-HTTPS servers get
-> NXDOMAIN so browsers cannot bypass HISN; a block page explains each block; a dashboard shows threats,
-> devices and alerts and lets the owner unblock sites. How it fits together:
-> [docs/architecture.md](docs/architecture.md). How to show it: [docs/demo.md](docs/demo.md).
-> Results: [Results](#results).
+**حصنٌ يعزّز حماية شبكتك**: a home DNS server that stops phishing and fake websites before they load
 
-## Screenshots
+Python · scikit-learn · Flask · SQLite · Arabic and English
 
-Taken with demo data (made-up devices and blocks), not a real home network.
+</div>
 
-| Dashboard (Arabic, dark) | Dashboard (English, light) |
-| --- | --- |
-| ![Dashboard in Arabic, dark mode](docs/images/dashboard.png) | ![Dashboard in English, light mode](docs/images/dashboard-light-en.png) |
+![The HISN dashboard in Arabic, dark mode](docs/images/dashboard.png)
 
-| Block page | Sign-in | Phone |
+Someone at home taps a link in a text message: `alrajhi-bank.com`, "your account is suspended". The
+page looks exactly like the bank. HISN never lets it open. The phone gets HISN's own page instead,
+which says in Arabic and English that the site impersonates a known organization and what to do now.
+
+HISN sits where every device already asks before opening a site: the network's DNS server. One small
+program can protect every phone, laptop and TV at home, with nothing installed on them. It knows the
+official domains of Saudi government services and banks, catches names that imitate them, and uses a
+machine-learning model for phishing names it has never seen.
+
+> **Status:** complete. Built in ten phases, from the DNS server to the dashboard. How the parts fit:
+> [docs/architecture.md](docs/architecture.md). A ten-minute demo: [docs/demo.md](docs/demo.md).
+> Every screenshot here uses made-up demo data.
+
+**Contents:** [How it works](#how-it-works) · [Why a site gets blocked](#why-a-site-gets-blocked) ·
+[The block page](#the-block-page) · [The dashboard](#the-dashboard) · [Results](#results) ·
+[Try it](#try-it) · [Use HISN for real](#use-hisn-for-real) · [Full guide](#full-guide)
+
+## How it works
+
+Before a browser opens `alrajhi-bank.com`, the device asks the DNS server for its address. HISN is that
+server, so every name passes through it first:
+
+```mermaid
+flowchart LR
+    phone["📱 Phone<br>opens a link"] -- "where is alrajhi-bank.com?" --> hisn{"HISN<br>checks the name"}
+    hisn -- "safe: the real address" --> site["🌐 The real site"]
+    hisn -- "dangerous: HISN's address" --> page["🛑 Block page<br>explains why"]
+    hisn -. "every decision" .-> dash["📊 Dashboard<br>for the owner"]
+```
+
+Checking a name takes a few milliseconds, so browsing feels the same. If anything inside HISN breaks,
+names are allowed rather than blocked: a fault never takes the home offline.
+
+## Why a site gets blocked
+
+HISN asks a fixed list of questions about every name, in order, and stops at the first answer:
+
+| # | Question | If yes |
 | --- | --- | --- |
-| ![Block page for absher-sa.com](docs/images/block-page.png) | ![Dashboard sign-in](docs/images/login.png) | ![Dashboard on a phone](docs/images/dashboard-phone.png) |
+| 1 | Is it an official domain (`absher.sa`, `alrajhibank.com.sa`, `my.gov.sa`, ...) or a subdomain of one? | Allow |
+| 2 | Did the owner unblock it from the dashboard? | Allow |
+| 3 | Is it on the list of reported fraud sites? | **Block: reported fraud site** |
+| 4 | Does it imitate a known brand on a domain that is not the brand's? | **Block: impersonation** |
+| 5 | Does the model think it is a phishing name (at least 90% sure)? | **Block: model decision** |
+| 6 | Nothing matched | Allow |
+
+So the block page shows one of four reasons (the example names are illustrations):
+
+| Reason | Example | How HISN knows |
+| --- | --- | --- |
+| **Reported fraud site** | `absher-sa.com` | It is on the blacklist (`data/lists/blacklist.txt`). |
+| **Impersonates a known organization** | `alrajhi-bank.com`, `a1rajhi.com` (digit 1 for l), `abshr.sa` (missing letter), `absher-login.com` | The look-alike rule finds a brand name, a look-alike spelling or swapped letters outside the brand's official domains. |
+| **Resembles known fraud names** | a name like `secure-account-update7731.top` | A Random Forest trained on thousands of real phishing and normal names scores the name: long runs of digits, cheap suffixes, words like "secure" and "update". A domain registered days ago counts against it. |
+| **Classified as unsafe** | any older block | The site was blocked, but the log that said why has since been deleted. |
+
+| Reported fraud site | Impersonation |
+| --- | --- |
+| ![Block page: reported fraud site](docs/images/block-blacklist.png) | ![Block page: impersonates a known organization](docs/images/block-lookalike.png) |
+| **Model decision** | **Older block, reason deleted** |
+| ![Block page: resembles known fraud names](docs/images/block-model.png) | ![Block page: classified as unsafe](docs/images/block-generic.png) |
+
+Two more things HISN does quietly:
+
+- **Stops DNS-over-HTTPS bypass.** Browsers can send their lookups to Google or Cloudflare over HTTPS
+  and skip the home DNS. HISN answers those services' names with "no such name", so browsers fall back
+  to HISN. The dashboard counts these separately; they are not threats.
+- **Matches on whole labels only.** `login.absher.sa` is official, but `absher.sa.fake-login.com` is
+  not: a fake site cannot pass by containing an official name.
+
+## The block page
+
+<img src="docs/images/block-phone.png" alt="The block page on a phone" width="260" align="right">
+
+Every blocked site leads here, on any device:
+
+- the blocked name and the reason, in Arabic and English;
+- what to do: do not enter a password or card details, open the service from its official app, and
+  what to do if details were already entered;
+- a **Back to safety** button.
+
+The page runs no script and never reads what a phishing form sends to it. It works for links typed or
+opened as `http://`; an `https://` link shows the browser's certificate warning instead, which still
+keeps the user away (see [docs/https_block_page.md](docs/https_block_page.md)).
+
+<br clear="right">
+
+## The dashboard
+
+One owner account, created on the HISN computer itself, signs in from any device at home. The
+dashboard refreshes every 15 seconds and covers the last 30 days:
+
+- **Alert banner** listing what was blocked since the owner last looked.
+- **Tiles:** threats blocked, blocked and allowed today, DoH bypass attempts stopped, devices.
+- **Charts:** requests per day, and blocks by reason.
+- **Lists:** latest blocks, sites blocked more than once, and each device's activity.
+- **Unblock** a site in one click (it takes effect within 2 seconds, no restart), and **Block again**.
+- Arabic or English, dark or light, laptop or phone.
+
+![Latest blocks and the sites blocked most often, each with its reason and an Unblock button](docs/images/dashboard-lists.png)
+
+![A site the owner unblocked, with Block again, and the activity of each device](docs/images/dashboard-allowed-devices.png)
+
+| English, light mode | Phone | Sign-in |
+| --- | --- | --- |
+| ![Dashboard in English, light mode](docs/images/dashboard-light-en.png) | ![Dashboard on a phone](docs/images/dashboard-phone.png) | ![Dashboard sign-in](docs/images/login.png) |
+
+## Results
+
+From `python -m ml.evaluate` on the project owner's computer (dataset: 8,644 malicious and 200,000
+benign names; test split: the newest 1,729 malicious names and 40,000 benign names, never used in
+training). **Every figure depends on unreviewed labels and generated look-alikes; read
+[docs/limitations.md](docs/limitations.md) first.**
+
+| What was measured | Result |
+| --- | --- |
+| Model on new phishing names, name only, threshold 0.90 | precision 0.933, recall 0.184 (319 of 1,729 caught, 23 of 40,000 benign blocked) |
+| Same, whole precision-recall curve | average precision 0.432 |
+| Model on look-alikes of brands it never saw (alinma, nafath) | 168 of 213 caught (78.9%) |
+| Look-alike rule on generated look-alikes of every brand | 639 of 639 caught (100%) |
+| Look-alike rule on benign test names | 0 of 40,000 wrongly flagged |
+| Model on test names with a known domain age | recall 0.356 with the age vs 0.184 on the name alone (precision 0.988 vs 0.978) |
+
+Other thresholds on the same test split:
+
+| Threshold | Precision | Recall | Benign blocked (of 40,000) |
+| --- | --- | --- | --- |
+| 0.70 | 0.702 | 0.318 | 234 |
+| 0.80 | 0.846 | 0.255 | 80 |
+| 0.90 (default) | 0.933 | 0.184 | 23 |
+| 0.95 | 0.976 | 0.138 | 6 |
+
+What this means:
+
+- **Look-alikes of Saudi brands** are HISN's main target, and the rule catches all generated ones
+  without flagging benign names. The rule and the generator were written together, so that 100% is a
+  sanity check; the 0 false positives are the meaningful number. Real attacks seen in the wild were
+  not available to test (the phishing feed used had no reports for these brands when checked).
+- **Generic phishing names** are hard to spot from the name alone: at 0.90 the model blocks about one
+  in five, and almost never a benign name. The threshold favours not breaking legitimate sites;
+  the table shows the cost of moving it.
+- **Domain age** helps: phishing domains are young (median 24 days, 51% under 30 days) and benign ones
+  old (median 4,582 days). Where the age is known, recall almost doubles. It is looked up in the
+  background, so the first answer for a new name uses the name alone.
+- **Omission** look-alikes (a missing letter, such as `ainma.sa`) are the model's weak spot (10 of 32
+  caught); the rule catches them.
+
+## Try it
+
+Needs Python 3.11 or newer. On a laptop, with test ports and no admin rights:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate            # macOS/Linux: source .venv/bin/activate
+pip install -r requirements-dev.txt
+python -m pytest
+python -m dns_server.server
+```
+
+In a second terminal, ask HISN about a name (it answers `127.0.0.1`, the block page, for a blocked one):
+
+```bash
+python -c "import sys; from dnslib import DNSRecord; print(DNSRecord.parse(DNSRecord.question(sys.argv[1]).send('127.0.0.1', 5353, timeout=5)))" alrajhi-bank.com
+```
+
+The lists and the look-alike rule work straight away. The model needs data and training first
+([Prepare the data](#prepare-the-data)); without it HISN runs on the lists and the rule. To protect a
+real browser or the whole home, see [Use HISN for real](#use-hisn-for-real).
+
+---
+
+## Full guide
+
+Everything below is the reference: each part, its settings and how to check it.
 
 ## Setup
 
@@ -63,7 +224,7 @@ On Linux and macOS `dig @127.0.0.1 -p 5353 absher-sa.com` also works.
 Blocked domains get the block page address (`HISN_BLOCK_PAGE_IP`). Everything else is forwarded to the upstream DNS.
 Edit `data/lists/whitelist.txt` and `data/lists/blacklist.txt`, then restart the server.
 
-### How a name is decided (Phase 5)
+### How a name is decided
 
 The first step that gives an answer wins:
 
@@ -91,7 +252,7 @@ the log, so you can see why a name was blocked:
 python -c "from storage.db import Database; [print(r.verdict, r.reason, r.domain) for r in Database('data/hisn.db').recent_requests(10)]"
 ```
 
-### Domain age (Phase 6)
+### Domain age
 
 Newly registered domains are riskier. When the model scores a name, the server also asks for the
 registration date of its registered domain (`example.com` for `login.example.com`) from RDAP, the
@@ -110,7 +271,7 @@ Registration dates are kept in memory for `HISN_DOMAIN_AGE_CACHE_TTL` seconds (d
 (never the full host) to the registry of its suffix. Set `HISN_DOMAIN_AGE_LOOKUP=false` to turn them
 off; the model then scores names only.
 
-### DNS-over-HTTPS blocking (Phase 7)
+### DNS-over-HTTPS blocking
 
 Browsers that use DNS-over-HTTPS (DoH) send their lookups straight to a public resolver over HTTPS,
 so HISN would never see them. Before using DoH they look up the DoH server's own name through the
@@ -134,7 +295,9 @@ python -c "import sys; from dnslib import DNSRecord; print(DNSRecord.parse(DNSRe
 A DoH server set up by its IP address, a browser where the user forced DoH on, and DNS-over-TLS
 (port 853) are not stopped by this; see [docs/limitations.md](docs/limitations.md).
 
-## Block page (Phase 8)
+## Block page
+
+<img src="docs/images/block-page.png" alt="The full block page" width="420" align="right">
 
 A blocked name resolves to `HISN_BLOCK_PAGE_IP`, so the browser lands on the block page instead of
 the real site. Run it in a second terminal, next to the DNS server:
@@ -170,7 +333,9 @@ The page runs no script, is never framed or cached, escapes the host name, and n
 phishing form posts to it. It serves plain HTTP only: an `https://` link shows a browser error instead
 of the page. The plan for that is in [docs/https_block_page.md](docs/https_block_page.md).
 
-## Dashboard (Phase 9)
+<br clear="right">
+
+## Dashboard
 
 The dashboard shows what HISN blocked on this network: threats blocked over the last 30 days and today,
 requests per day and the breakdown of block reasons (Chart.js charts), the latest blocks, the sites
@@ -325,7 +490,7 @@ Verdicts of the look-alike rule and the model are cached in memory for `HISN_VER
 (default one hour, at most 10,000 names). The cache is checked after the whitelist and blacklist, so
 editing a list always wins over a cached verdict.
 
-## Prepare the data (Phase 3)
+## Prepare the data
 
 The model learns from public feeds. They are third-party data, so they stay in `data/raw/` and
 `data/processed/`, which git ignores.
@@ -378,7 +543,7 @@ with the shipped brand list (more brands make it slower).
 Brands in `data/lists/brands.txt` need their official domain in `data/lists/whitelist.txt`, otherwise the real site looks like
 an impersonation. Add them together, and only after checking the domain on the organisation's own pages.
 
-## Train and evaluate the model (Phase 4)
+## Train and evaluate the model
 
 Phishing feeds are mostly random-looking names, so they teach the model nothing about names that
 imitate Saudi brands (`absher-sa.com`, `abhser.com`). Two additions cover that:
@@ -421,7 +586,7 @@ To also test a trick the model never saw, hold a technique out of training:
 python -m ml.train --holdout-technique transposition
 ```
 
-### Domain ages for training (Phase 6)
+### Domain ages for training
 
 The model can only learn from the age if some training names have one. Look them up once (no key
 needed, about one second per domain on purpose, so the registries are not flooded):
@@ -458,46 +623,6 @@ runs without a model until you retrain.
 **Every number depends on labels nobody reviewed and on generated look-alikes.** Read
 [docs/limitations.md](docs/limitations.md) before quoting one. A larger brand list is proposed in
 [docs/brand_list_proposal.md](docs/brand_list_proposal.md); its domains must be confirmed first.
-
-## Results
-
-From `python -m ml.evaluate` on the project owner's computer (dataset: 8,644 malicious and 200,000
-benign names; test split: the newest 1,729 malicious names and 40,000 benign names, never used in
-training). **Every figure depends on unreviewed labels and generated look-alikes; read
-[docs/limitations.md](docs/limitations.md) first.**
-
-| What was measured | Result |
-| --- | --- |
-| Model on new phishing names, name only, threshold 0.90 | precision 0.933, recall 0.184 (319 of 1,729 caught, 23 of 40,000 benign blocked) |
-| Same, whole precision-recall curve | average precision 0.432 |
-| Model on look-alikes of brands it never saw (alinma, nafath) | 168 of 213 caught (78.9%) |
-| Look-alike rule on generated look-alikes of every brand | 639 of 639 caught (100%) |
-| Look-alike rule on benign test names | 0 of 40,000 wrongly flagged |
-| Model on test names with a known domain age | recall 0.356 with the age vs 0.184 on the name alone (precision 0.988 vs 0.978) |
-
-Other thresholds on the same test split:
-
-| Threshold | Precision | Recall | Benign blocked (of 40,000) |
-| --- | --- | --- | --- |
-| 0.70 | 0.702 | 0.318 | 234 |
-| 0.80 | 0.846 | 0.255 | 80 |
-| 0.90 (default) | 0.933 | 0.184 | 23 |
-| 0.95 | 0.976 | 0.138 | 6 |
-
-What this means:
-
-- **Look-alikes of Saudi brands** are HISN's main target, and the rule catches all generated ones
-  without flagging benign names. The rule and the generator were written together, so that 100% is a
-  sanity check; the 0 false positives are the meaningful number. Real attacks seen in the wild were
-  not available to test (the phishing feed used had no reports for these brands when checked).
-- **Generic phishing names** are hard to spot from the name alone: at 0.90 the model blocks about one
-  in five, and almost never a benign name. The threshold favours not breaking legitimate sites;
-  the table shows the cost of moving it.
-- **Domain age** helps: phishing domains are young (median 24 days, 51% under 30 days) and benign ones
-  old (median 4,582 days). Where the age is known, recall almost doubles. It is looked up in the
-  background, so the first answer for a new name uses the name alone.
-- **Omission** look-alikes (a missing letter, such as `ainma.sa`) are the model's weak spot (10 of 32
-  caught); the rule catches them.
 
 ## Run the tests
 
