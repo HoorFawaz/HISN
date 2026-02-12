@@ -9,8 +9,8 @@ Every result figure HISN reports depends on these points. Quote them next to any
   most legitimate sites, but some noise remains in both directions.
 - **Benign names have no dates.** Only the malicious side is split by time. Benign names are split
   at random with the same ratio, so the test set does not show how benign traffic changes over time.
-- **Class ratio about 1:23** (8,644 malicious, 200,000 benign). Accuracy is meaningless here
-  ("allow everything" scores about 96%), so only precision, recall and the confusion matrix are reported.
+- **Class ratio about 1:16** (12,463 malicious, 200,000 benign). Accuracy is meaningless here
+  ("allow everything" scores about 94%), so only precision, recall and the confusion matrix are reported.
 - **IP-address URLs are out of scope.** A DNS filter only sees names, so feed reports that use a bare
   IP address are dropped.
 - **Feed names do not look like Saudi brands.** Phishing feeds are mostly random-looking names, so
@@ -48,10 +48,10 @@ Every result figure HISN reports depends on these points. Quote them next to any
   problem is logged. Protection then rests on the lists and the look-alike rule only. This is on purpose:
   a broken model must not take the home network offline.
 - **The rule blocks on its own.** `typo` matches (one or two letters away from a brand) block without the
-  model, so a legitimate name close to a brand (for example `asher.com` for `absher`) is blocked until it
-  is added to the whitelist. `contains` matches do not block on their own by default.
-- **Blocking threshold.** 0.90 favours precision: on the current model it gives precision 0.933 and
-  recall 0.184 on the temporal test split (319 of 1,729 phishing names caught, 23 of 40,000 benign names
+  model, so a legitimate name close to a brand (for example `asher.com` for `absher`, or `alinea.dk` for `alinma`, the one benign test name the
+  rule flagged) is blocked until it is added to the whitelist. `contains` matches do not block on their own by default.
+- **Blocking threshold.** 0.90 favours precision: on the current model it gives precision 0.953 and
+  recall 0.254 on the temporal test split (634 of 2,493 phishing names caught, 31 of 40,000 benign names
   blocked), so most phishing names that only the model could catch are still allowed. The look-alike rule and the blacklist carry most of
   the protection. Re-check the threshold table in `python -m ml.evaluate` after every retraining.
 - **Cached verdicts.** A verdict lasts up to one hour. A name that becomes dangerous within that hour, or

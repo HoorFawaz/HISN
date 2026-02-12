@@ -119,43 +119,45 @@ dashboard refreshes every 15 seconds and covers the last 30 days:
 
 ## Results
 
-From `python -m ml.evaluate` on the project owner's computer (dataset: 8,644 malicious and 200,000
-benign names; test split: the newest 1,729 malicious names and 40,000 benign names, never used in
+From `python -m ml.evaluate` on the project owner's computer (dataset: 12,463 malicious and 200,000
+benign names; test split: the newest 2,493 malicious names and 40,000 benign names, never used in
 training). **Every figure depends on unreviewed labels and generated look-alikes; read
 [docs/limitations.md](docs/limitations.md) first.**
 
 | What was measured | Result |
 | --- | --- |
-| Model on new phishing names, name only, threshold 0.90 | precision 0.933, recall 0.184 (319 of 1,729 caught, 23 of 40,000 benign blocked) |
-| Same, whole precision-recall curve | average precision 0.432 |
-| Model on look-alikes of brands it never saw (alinma, nafath) | 168 of 213 caught (78.9%) |
+| Model on new phishing names, name only, threshold 0.90 | precision 0.953, recall 0.254 (634 of 2,493 caught, 31 of 40,000 benign blocked) |
+| Same, whole precision-recall curve | average precision 0.510 |
+| Model on look-alikes of brands it never saw (alinma, nafath) | 151 of 213 caught (70.9%) |
 | Look-alike rule on generated look-alikes of every brand | 639 of 639 caught (100%) |
-| Look-alike rule on benign test names | 0 of 40,000 wrongly flagged |
-| Model on test names with a known domain age | recall 0.356 with the age vs 0.184 on the name alone (precision 0.988 vs 0.978) |
+| Look-alike rule on benign test names | 1 of 40,000 wrongly flagged (`alinea.dk`, one letter from `alinma`) |
+| Model on test names with a known domain age | recall 0.419 with the age vs 0.233 on the name alone (precision 0.994 vs 1.000; 377 malicious names with a known age) |
 
 Other thresholds on the same test split:
 
 | Threshold | Precision | Recall | Benign blocked (of 40,000) |
 | --- | --- | --- | --- |
-| 0.70 | 0.702 | 0.318 | 234 |
-| 0.80 | 0.846 | 0.255 | 80 |
-| 0.90 (default) | 0.933 | 0.184 | 23 |
-| 0.95 | 0.976 | 0.138 | 6 |
+| 0.70 | 0.740 | 0.357 | 312 |
+| 0.80 | 0.873 | 0.305 | 111 |
+| 0.90 (default) | 0.953 | 0.254 | 31 |
+| 0.95 | 0.992 | 0.194 | 4 |
 
 What this means:
 
 - **Look-alikes of Saudi brands** are HISN's main target, and the rule catches all generated ones
-  without flagging benign names. The rule and the generator were written together, so that 100% is a
-  sanity check; the 0 false positives are the meaningful number. Real attacks seen in the wild were
+  while flagging 1 benign name in 40,000. The rule and the generator were written together, so that 100%
+  is a sanity check; the false positives are the meaningful number. Real attacks seen in the wild were
   not available to test (the phishing feed used had no reports for these brands when checked).
 - **Generic phishing names** are hard to spot from the name alone: at 0.90 the model blocks about one
-  in five, and almost never a benign name. The threshold favours not breaking legitimate sites;
+  in four, and almost never a benign name. The threshold favours not breaking legitimate sites;
   the table shows the cost of moving it.
 - **Domain age** helps: phishing domains are young (median 24 days, 51% under 30 days) and benign ones
-  old (median 4,582 days). Where the age is known, recall almost doubles. It is looked up in the
+  old (median 5,433 days). Where the age is known, recall almost doubles. It is looked up in the
   background, so the first answer for a new name uses the name alone.
-- **Omission** look-alikes (a missing letter, such as `ainma.sa`) are the model's weak spot (10 of 32
-  caught); the rule catches them.
+- **Omission** and **transposition** look-alikes (a missing or swapped letter, such as `ainma.sa`) are the
+  model's weak spots (10 of 32 and 13 of 32 caught); the rule catches them. After this retraining on
+  more feed data the held-out look-alike recall went down (78.9% to 70.9%, on only 213 names), while
+  the name-only numbers went up: the model trades one for the other, and the rule covers the gap.
 
 ## Try it
 
