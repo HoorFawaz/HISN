@@ -100,22 +100,45 @@ Either way the fake site never loads (see [docs/https_block_page.md](docs/https_
 ## The dashboard
 
 One owner account, created on the HISN computer itself, signs in from any device at home. The
-dashboard refreshes every 15 seconds and covers the last 30 days:
+dashboard refreshes every 15 seconds and covers the last 30 days. Here is each part.
 
-- **Alert banner** listing what was blocked since the owner last looked.
-- **Tiles:** threats blocked, blocked and allowed today, DoH bypass attempts stopped, devices.
-- **Charts:** requests per day, and blocks by reason.
-- **Lists:** latest blocks, sites blocked more than once, and each device's activity.
-- **Unblock** a site in one click (it takes effect within 2 seconds, no restart), and **Block again**.
-- Arabic or English, dark or light, laptop or phone.
+### Alert banner
 
-![Latest blocks and the sites blocked most often, each with its reason and an Unblock button](docs/images/dashboard-lists.png)
+Lists what was blocked since the owner last looked, until the owner presses OK.
 
-![A site the owner unblocked, with Block again, and the activity of each device](docs/images/dashboard-allowed-devices.png)
+![The alert banner with the newest blocked attempts](docs/images/dashboard-alert.png)
 
-| Light mode | Phone | Sign-in |
-| --- | --- | --- |
-| ![Dashboard in light mode](docs/images/dashboard-light-en.png) | ![Dashboard on a phone](docs/images/dashboard-phone.png) | ![Dashboard sign-in](docs/images/login.png) |
+### Tiles
+
+Threats blocked in the last 30 days, blocked and allowed today, DoH bypass attempts stopped, and devices on the network.
+
+![The five summary tiles](docs/images/dashboard-tiles.png)
+
+### Charts
+
+Requests per day (allowed and blocked), and blocks by reason.
+
+![Daily requests and the block reasons breakdown](docs/images/dashboard-charts.png)
+
+### Lists
+
+Latest blocks and the sites blocked more than once, each with its reason and an Unblock button, then the activity of each device.
+
+![Latest blocks and the sites blocked most often](docs/images/dashboard-lists.png)
+
+![The activity of each device on the network](docs/images/dashboard-devices.png)
+
+### Unblock and Block again
+
+Unblock a site in one click (it takes effect within 2 seconds, no restart). It then appears here, with a Block again button.
+
+![A site the owner unblocked, with Block again](docs/images/dashboard-unblock.png)
+
+### Arabic or English, dark or light, laptop or phone
+
+| Arabic | Light mode | Phone | Sign-in |
+| --- | --- | --- | --- |
+| ![Dashboard in Arabic](docs/images/dashboard-ar.png) | ![Dashboard in light mode](docs/images/dashboard-light-en.png) | ![Dashboard on a phone](docs/images/dashboard-phone.png) | ![Dashboard sign-in](docs/images/login.png) |
 
 ## Results
 
