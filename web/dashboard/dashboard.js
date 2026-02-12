@@ -243,7 +243,9 @@
     const any = keys.some((k) => byReason[k] > 0);
     $("reason-empty").hidden = any;
     $("reason-chart").hidden = !any;
-    const colors = { blacklist: "--reason-blacklist", lookalike: "--reason-lookalike", model: "--reason-model" };
+    const colors = {
+      blacklist: "--reason-blacklist", lookalike: "--reason-lookalike", model: "--reason-model", visual: "--reason-visual",
+    };
     const data = {
       labels: keys.map(reasonText),
       datasets: [{

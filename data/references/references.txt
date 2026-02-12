@@ -1,0 +1,12 @@
+# Official pages the visual check compares suspicious sites with.
+# One per line: brand (as in data/lists/brands.txt) and an https:// page on a
+# whitelisted domain. Login pages are what phishing kits copy most, so add
+# them when you know their address; a page that needs a click to appear can
+# be added as a screenshot instead:
+#   python -m ml.visual.reference_hashes --add alrajhi login.png
+# Build the hashes with: python -m ml.visual.reference_hashes
+absher     https://www.absher.sa/
+alrajhi    https://www.alrajhibank.com.sa/
+alinma     https://www.alinma.com/
+riyadbank  https://www.riyadbank.com/
+nafath     https://www.iam.gov.sa/

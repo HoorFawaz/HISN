@@ -19,7 +19,8 @@ program can protect every phone, laptop and TV at home, with nothing installed o
 official domains of Saudi government services and banks, catches names that imitate them, and uses a
 machine-learning model for phishing names it has never seen.
 
-> **Status:** complete. Built in ten phases, from the DNS server to the dashboard. How the parts fit:
+> **Status:** complete. Built in ten phases, from the DNS server to the dashboard, plus an optional
+> visual check (Phase 11). How the parts fit:
 > [docs/architecture.md](docs/architecture.md). A ten-minute demo: [docs/demo.md](docs/demo.md).
 > Every screenshot here uses made-up demo data.
 
@@ -54,15 +55,17 @@ HISN asks a fixed list of questions about every name, in order, and stops at the
 | 3 | Is it on the list of reported fraud sites? | **Block: reported fraud site** |
 | 4 | Does it imitate a known brand on a domain that is not the brand's? | **Block: impersonation** |
 | 5 | Does the model think it is a phishing name (at least 90% sure)? | **Block: model decision** |
-| 6 | Nothing matched | Allow |
+| 6 | *Optional:* the model is unsure (50% to 90%). Does the site's page look like an official site? | **Block: visual match** |
+| 7 | Nothing matched | Allow |
 
-So the block page shows one of four reasons (the example names are illustrations):
+So the block page shows one of these reasons (the example names are illustrations):
 
 | Reason | Example | How HISN knows |
 | --- | --- | --- |
 | **Reported fraud site** | `absher-sa.com` | It is on the blacklist (`data/lists/blacklist.txt`). |
 | **Impersonates a known organization** | `alrajhi-bank.com`, `a1rajhi.com` (digit 1 for l), `abshr.sa` (missing letter), `absher-login.com` | The look-alike rule finds a brand name, a look-alike spelling or swapped letters outside the brand's official domains. |
 | **Resembles known fraud names** | a name like `secure-account-update7731.top` | A Random Forest trained on thousands of real phishing and normal names scores the name: long runs of digits, cheap suffixes, words like "secure" and "update". A domain registered days ago counts against it. |
+| **Looks like an official site** (optional) | a name like `rajhi-online-services.top` showing a copy of the bank's page | A separate worker opens the page once in a locked-down browser and compares its screenshot with screenshots of the official sites ([Visual check](#visual-check-optional)). |
 | **Classified as unsafe** | any older block | The site was blocked, but the log that said why has since been deleted. |
 
 | Reported fraud site | Impersonation |
@@ -230,7 +233,9 @@ The first step that gives an answer wins:
 2. blacklist (always block), 3. verdict cache,
 4. look-alike rule: a name that imitates a brand in `brands.txt` is blocked on its own,
 5. model: blocked if its probability is at least `HISN_MODEL_THRESHOLD` (default 0.90), otherwise allowed.
-   The domain age is one of its inputs when it is already known (Phase 6, below),
+   The domain age is one of its inputs when it is already known (Phase 6, below). With the optional
+   visual check on, a name scored from `HISN_VISUAL_MIN_SCORE` (default 0.50) up to the threshold is
+   blocked once its page was found to look like an official site ([Visual check](#visual-check-optional)),
 6. default: allow.
 
 Only steps 4 and 5 store their verdict in the cache. `HISN_LOOKALIKE_BLOCK` lists the look-alike
@@ -243,7 +248,7 @@ logs a warning and runs without it; if the model fails on a name, that name is a
 logged. After retraining, restart the server. The first query for a new name takes some milliseconds
 longer (feature extraction and the forest); repeats come from the cache.
 
-The reason of every decision (`whitelist`, `owner`, `blacklist`, `cache`, `lookalike`, `model`, `default`) is in
+The reason of every decision (`whitelist`, `owner`, `blacklist`, `cache`, `lookalike`, `model`, `visual`, `default`) is in
 the log, so you can see why a name was blocked:
 
 ```bash
@@ -292,6 +297,89 @@ python -c "import sys; from dnslib import DNSRecord; print(DNSRecord.parse(DNSRe
 
 A DoH server set up by its IP address, a browser where the user forced DoH on, and DNS-over-TLS
 (port 853) are not stopped by this; see [docs/limitations.md](docs/limitations.md).
+
+### Visual check (optional)
+
+Phishing kits copy the official page so the victim trusts it. The visual check catches a copy that the
+model was unsure about: a name the model scores from `HISN_VISUAL_MIN_SCORE` (default 0.50) up to
+`HISN_MODEL_THRESHOLD` is queued, a separate worker opens its home page once in a headless browser,
+and if the screenshot looks like one of the official reference screenshots, the name is blocked from
+then on with the reason **visual match**. It is off by default because it makes the HISN computer
+open suspicious sites.
+
+How it decides: each screenshot becomes a 64-bit perceptual hash (pHash: greyscale, shrunk to
+32 x 32, the lowest frequencies of a DCT). A copy of a page lands within a few bits of the original;
+unrelated pages differ in about 32. Home pages have a rotating banner that changes the whole-page hash,
+so the top strip (logo and menu, 160 pixels) gets its own hash, and a page matches when either hash is
+within `HISN_VISUAL_MAX_DISTANCE` (default 10) of a reference. A strip that is blank is never compared.
+
+Like the domain age, it **never delays the DNS answer**: the first visit is answered by the model, the
+check runs in the background, and the result protects the next visit and every other device. The DNS
+server never opens a browser; it only writes the name into the `visual_checks` table, and the worker
+writes the result back.
+
+The browser is treated as hostile ground (`ml/visual/capture.py`, `ml/visual/ssrf_guard.py`):
+
+- **the browser never connects to anything itself.** Every request it makes (the page, its images and
+  styles, on any host, and every redirect) is fetched by HISN's guard, which resolves the name through
+  the upstream DNS server, allows **public addresses only** and connects to exactly the address it
+  checked. A page can never make HISN open the router or another device at home (SSRF);
+- inside the browser every name and IP address is "not found", as a second wall; only GET requests are
+  fetched, with no cookies;
+- no proxy, no WebRTC, no downloads, no service workers, a fresh empty profile for every page, and the
+  screenshot is never saved, only its hash;
+- Chromium's sandbox is on, and the worker refuses to run as root or as a Windows administrator.
+
+Set it up once (in a normal window, **not** as administrator):
+
+```bash
+python -m playwright install chromium
+```
+
+```bash
+python -m ml.visual.reference_hashes
+```
+
+The second command tries to photograph the official pages listed in `data/references/references.txt`
+(only whitelisted domains are accepted) three times each, a few seconds apart, in exactly the same
+browser as the checks, and writes `data/references/hashes.json`. **Many official sites refuse automatic
+browsers** (a captcha, "The requested URL was rejected"); the command skips those pages and never keeps
+an error page as a reference. Login pages are what kits
+copy most: for every brand that was skipped, open its login page in your own browser (maximised, light
+mode), take a screenshot of the page without the address bar (`Win + Shift + S`), save it, and add it:
+`python -m ml.visual.reference_hashes --add alrajhi login.png`. Screenshots and hashes stay on your
+computer (`.gitignore`).
+
+Then set `HISN_VISUAL_CHECK=true` in `.env`, restart the DNS server, and start the worker in its own
+normal window:
+
+```bash
+python -m ml.visual.worker
+```
+
+Check one name by hand (nothing goes to the database): `python -m ml.visual.worker --check example.com`.
+Add `--save shot.png` to keep the screenshot and print the distance to the closest reference of each
+brand, to see what the check saw. An
+official page itself (`--check www.alrajhibank.com.sa`) should come out as `match`: if it does not, its
+page changes too much between visits to be a good reference, and a screenshot of its login page
+(`--add`) works better. If the
+worker is not running, names stay queued and the model's verdict stands. Results are trusted for
+`HISN_VISUAL_TTL` seconds (default 7 days) and are deleted with the logs.
+
+Measure it on its own with screenshots of ordinary sites (never the official ones):
+
+```bash
+python -m ml.visual.capture --out data/visual_eval/negatives google.com wikipedia.org github.com
+```
+
+```bash
+python -m ml.visual.evaluate --negatives data/visual_eval/negatives
+```
+
+It prints precision and recall at the configured distance and for other distances. Without real
+impersonation screenshots (`--positives`), it uses synthetic copies of the references (shifted,
+resized, re-compressed, with a banner), which is the best case; see
+[docs/limitations.md](docs/limitations.md#visual-check-phase-11).
 
 ## Block page
 
@@ -483,6 +571,10 @@ verdict, reason and the client address. Nothing else (no URLs, no answers). Inva
 
 Daily allow/block totals contain no domains or devices, so they are kept when old entries are purged
 and removed only by `delete-all`.
+
+With the visual check on, the names it queued and their results (`visual_checks`) follow the same
+retention and are removed by `delete-all` too. Screenshots are never saved; only official reference
+screenshots are kept, in `data/references/`.
 
 Verdicts of the look-alike rule and the model are cached in memory for `HISN_VERDICT_CACHE_TTL` seconds
 (default one hour, at most 10,000 names). The cache is checked after the whitelist and blacklist, so

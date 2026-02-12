@@ -58,6 +58,21 @@ CREATE TABLE IF NOT EXISTS owner_actions (
 
 CREATE INDEX IF NOT EXISTS idx_owner_actions_ts ON owner_actions (ts);
 
+-- Visual check queue and results (Phase 11, optional). The DNS server adds a
+-- suspicious site as 'pending'; the visual worker (ml/visual/worker.py) sets
+-- 'match' (looks like an official site: blocked), 'clear' or 'failed'. Holds
+-- visited names, so it is purged and deleted with the other logs.
+CREATE TABLE IF NOT EXISTS visual_checks (
+    domain       TEXT    PRIMARY KEY,
+    status       TEXT    NOT NULL CHECK (status IN ('pending', 'match', 'clear', 'failed')),
+    brand        TEXT,              -- the official site it looks like ('match' only)
+    distance     INTEGER,           -- pHash distance to the closest reference
+    requested_at INTEGER NOT NULL,
+    checked_at   INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_visual_checks_status ON visual_checks (status, requested_at);
+
 -- The one dashboard account (the admin), shared by everyone who manages the
 -- home network. Only a salted scrypt hash of the password is stored. Not a
 -- log: never purged or deleted with the logs.

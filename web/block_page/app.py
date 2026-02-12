@@ -81,6 +81,10 @@ REASONS = {
         "اسم هذا الموقع يشبه أنماط أسماء مواقع الاحتيال المعروفة.",
         "This site's name resembles patterns commonly used by known fraud sites.",
     ),
+    "visual": ReasonText(
+        "صفحة هذا الموقع تشبه صفحة جهة معروفة، لكنه ليس موقعها الرسمي.",
+        "This site's page looks like a known organization's page, but it is not their official site.",
+    ),
 }
 # The site was blocked by one of the above, but the log no longer says which.
 GENERIC_REASON = ReasonText(

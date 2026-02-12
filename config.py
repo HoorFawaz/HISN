@@ -156,6 +156,17 @@ class Settings:
     # DNS-over-HTTPS servers get NXDOMAIN so browsers fall back to HISN
     doh_block: bool
 
+    # Visual check (Phase 11, optional): a separate worker screenshots sites the
+    # model finds suspicious but not dangerous enough to block, and compares
+    # them with screenshots of the official sites.
+    visual_check: bool  # False: the DNS server never queues a check
+    visual_min_score: float  # model probability from which a site is checked
+    visual_max_distance: int  # largest pHash distance (of 64 bits) that counts as "looks the same"
+    visual_ttl: int  # seconds a visual result is trusted before the site is checked again
+    visual_timeout: float  # seconds the browser may spend loading one page
+    visual_browser_path: str  # Chromium to use; empty = the one "playwright install" downloaded
+    references_dir: Path  # data/references: official screenshots and their hashes
+
     # Storage
     db_path: Path
     log_retention_days: int
@@ -204,6 +215,13 @@ def load_settings() -> Settings:
         domain_age_timeout=_env_float("HISN_DOMAIN_AGE_TIMEOUT", 3.0, minimum=0.5, maximum=15.0),
         domain_age_cache_ttl=_env_int("HISN_DOMAIN_AGE_CACHE_TTL", 604800, minimum=3600, maximum=2592000),
         doh_block=_env_bool("HISN_DOH_BLOCK", True),
+        visual_check=_env_bool("HISN_VISUAL_CHECK", False),
+        visual_min_score=_env_float("HISN_VISUAL_MIN_SCORE", 0.50, minimum=0.0, maximum=1.0),
+        visual_max_distance=_env_int("HISN_VISUAL_MAX_DISTANCE", 10, minimum=0, maximum=32),
+        visual_ttl=_env_int("HISN_VISUAL_TTL", 604800, minimum=3600, maximum=2592000),
+        visual_timeout=_env_float("HISN_VISUAL_TIMEOUT", 30.0, minimum=5.0, maximum=120.0),
+        visual_browser_path=_env_str("HISN_VISUAL_BROWSER_PATH", ""),
+        references_dir=_env_path("HISN_REFERENCES_DIR", "data/references"),
         db_path=_env_path("HISN_DB_PATH", "data/hisn.db"),
         log_retention_days=_env_int("HISN_LOG_RETENTION_DAYS", 30, minimum=1, maximum=365),
         verdict_cache_ttl=_env_int("HISN_VERDICT_CACHE_TTL", 3600, minimum=1, maximum=86400),

@@ -166,7 +166,57 @@ institutions can register under it. A compromised site inside it is not blocked;
 impersonation, and an official domain that was broken into is out of its scope (the same holds for
 every whitelisted domain).
 
-## Optional visual check (Phase 11, not built)
+## Visual check (Phase 11)
 
-If built, it only sees the homepage of a domain (DNS never sees the full URL), and phishing kits
-can show bots a harmless page, so it complements the other checks and never replaces them.
+- **Home page only.** DNS never sees the full URL, so the worker opens `/`. A kit that only shows the
+  copy at `/login/secure.php` and a blank or harmless page at `/` is not caught.
+- **Cloaking.** Kits often show bots, data-centre addresses or headless browsers a harmless page. The
+  worker runs from the home connection with a normal screen size, but a kit can still detect it.
+- **Too late for the first visit.** The check runs after the first query (the DNS answer never waits),
+  so it protects the next visit and the other devices, not the first one.
+- **Only names the model is unsure about** (from `HISN_VISUAL_MIN_SCORE` to the block threshold). A
+  copy on a name the model scores low is never opened.
+- **pHash sees the layout, not the details.** It is greyscale and coarse: two brands with similar
+  layouts can match each other, a copy with a new colour scheme or layout is missed, and an unrelated
+  page that happens to share the layout (a centred white login box) can match. That is why it only
+  runs on names the model already finds suspicious.
+- **Official sites refuse automatic screenshots.** Tested on 2026-10-19 with the project owner's
+  computer: Absher shows a captcha, Alinma and Al Rajhi answer "The requested URL was rejected", Nafath
+  does not load, and only Riyad Bank gave a real page. A page that is nearly one colour (an error, a
+  bot check, a blank page) is never kept as a reference and never compared (`ml/visual/compare.py`,
+  `empty_share`); the check reports `failed`. So the references of those brands are screenshots taken
+  by hand in a real browser (`--add`). The same protection can stop the check of another site; that
+  site is then simply not checked. The guard fetches with Python's own TLS stack, which such
+  protection can tell apart from a real browser, so it will fail on more sites than a browser would.
+- **Rotating banners change the whole-page hash.** Two visits to Riyad Bank's home page, with different
+  hero banners, were 28 bits apart, as far as unrelated pages. So a screenshot also gets a hash of its top
+  strip (logo and menu), which a clone copies and a banner does not change. On 18 screenshots of 8 banks
+  taken by hand (each compared with all the others), the strip matched 6 of the 16 pages that have a
+  page of the same bank among the others (Al Rajhi 2 of 2, Riyad Bank 4 of 5) where the whole-page hash
+  matched none, and no page matched another bank (different banks were at least 18 bits apart). Pages of one bank in a different theme (dark mode, a private-banking
+  page) still differ by 12 to 22 bits, so add a reference for each look. The sample is small.
+- **Language.** The browser asks for Arabic (`ar-SA`), as the Saudi sites default to, and the references
+  are Arabic pages. A site that shows an English page to the same request lays out differently
+  (left to right) and will not match an Arabic reference, so add an English screenshot as well if a
+  brand's English page is a likely target. Cookie pop-ups at the bottom of the page barely move the
+  top-strip hash but do move the whole-page hash.
+- **Window size.** The check photographs a 1900 x 900 window (`VIEWPORT` in `capture.py`); take
+  reference screenshots by hand in a maximised browser on a normal screen, without the address bar.
+  A page laid out for a much narrower or wider window hashes differently.
+- **Script redirects and changing pages.** HTTP redirects are followed (each through the guard), but a
+  page that moves on with a script after loading, or that rotates banners and pop-ups, may be
+  photographed in a different state than its reference. References take three screenshots per page to
+  cover a rotating banner, and CSS animations are frozen, but a page that changes on every visit makes
+  a poor reference; use its login page instead.
+- **Slower than a normal browser.** Every file goes through the guard (one DNS check per host, no
+  cache, no HTTP/2), so a heavy page can take several seconds; `HISN_VISUAL_TIMEOUT` (default 30) caps
+  it. Only GET requests are fetched, so a page that builds itself from POST requests looks incomplete.
+- **Synthetic evaluation.** Without real impersonation screenshots, `ml/visual/evaluate.py` measures
+  recall on edited copies of the references. That is the best case (a kit copying the page as it is),
+  not a field result.
+- **References age.** When an official site changes its design, rebuild the references; old ones stop
+  matching new copies.
+- **Opening suspicious pages has a risk.** The browser is sandboxed, reaches public addresses only and runs as a normal user,
+  but a browser exploit is still possible. Keep Chromium updated (`python -m playwright install
+  chromium` after upgrading Playwright), or run the worker in a container or a separate user account.
+  The site also sees the home's public IP address and one visit.

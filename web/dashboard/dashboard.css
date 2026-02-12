@@ -64,12 +64,14 @@
   --reason-blacklist: #e2533f;
   --reason-lookalike: #e0a53c;
   --reason-model: #7b6cf6;
+  --reason-visual: #3fb6c4;
   --reason-other: #9b94b4;
   --grid: #2a2440;
   --shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
   --badge-blacklist: #ff8b7a;
   --badge-lookalike: #f2c46d;
   --badge-model: #a99ffb;
+  --badge-visual: #7fd8e2;
   --badge-owner: #7fd3a4;
   --link: #a99ffb;
   --placeholder: #6f688a;
@@ -96,12 +98,14 @@
   --reason-blacklist: #d4412c;
   --reason-lookalike: #c98a1c;
   --reason-model: #6250e0;
+  --reason-visual: #1d8d9b;
   --reason-other: #8a849c;
   --grid: #ebe7f3;
   --shadow: 0 4px 16px rgba(60, 40, 120, 0.08);
   --badge-blacklist: #b3301e;
   --badge-lookalike: #94640a;
   --badge-model: #4f3fc9;
+  --badge-visual: #116f7b;
   --badge-owner: #23774d;
   --link: #5443d6;
   --placeholder: #9993ab;
@@ -322,6 +326,7 @@ button.reblock { background: transparent; color: var(--badge-blacklist); border-
 .badge.blacklist { color: var(--badge-blacklist); border-color: var(--reason-blacklist); background: rgba(226, 83, 63, 0.12); }
 .badge.lookalike { color: var(--badge-lookalike); border-color: var(--reason-lookalike); background: rgba(224, 165, 60, 0.12); }
 .badge.model { color: var(--badge-model); border-color: var(--reason-model); background: rgba(123, 108, 246, 0.14); }
+.badge.visual { color: var(--badge-visual); border-color: var(--reason-visual); background: rgba(63, 182, 196, 0.12); }
 
 /* ----- laptop, tablet, phone ----- */
 @media (max-width: 1000px) {

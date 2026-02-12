@@ -63,7 +63,7 @@ def test_a_large_body_is_ignored(client: FlaskClient) -> None:
 
 @pytest.mark.parametrize(
     ("reason", "text"),
-    [("blacklist", REASONS["blacklist"]), ("lookalike", REASONS["lookalike"]), ("model", REASONS["model"])],
+    [(key, REASONS[key]) for key in ("blacklist", "lookalike", "model", "visual")],
 )
 def test_reason_comes_from_the_log(client: FlaskClient, db: Database, reason: str, text: object) -> None:
     db.log_decision("bad.example.com", "block", reason, "192.168.1.5")

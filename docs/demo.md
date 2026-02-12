@@ -79,6 +79,21 @@ Then switch to the dashboard tab (it refreshes every 15 seconds):
    is not registered. Press **Block again** to undo.
 4. Switch **ع | E** and the dark/light mode, and show the page on a phone width if there is time.
 
+## Optional: the visual check
+
+If the visual check is set up (README, [Visual check](../README.md#visual-check-optional)), open a
+fourth window, **not** as administrator, and start `python -m ml.visual.worker`. Then:
+
+1. Run `python -m ml.visual.worker --check google.com`: it prints `clear` and the distance to the
+   closest official reference (unrelated pages are about 32 bits apart, a match is 10 or less).
+2. Show `python -m ml.visual.evaluate --negatives data/visual_eval/negatives`: precision and recall of
+   the visual match on its own, and why the distance limit is where it is.
+3. Point out the safety design: public addresses only, a sandboxed browser whose every request goes through the guard, no screenshots
+   kept, and the DNS server never opens a browser itself.
+
+Live phishing copies change by the hour, so the demo shows the check and its numbers rather than
+waiting for a real copy to appear.
+
 ## Talking points
 
 - **Why DNS:** every device asks DNS before opening a site, so one server protects the whole home

@@ -17,7 +17,10 @@ Flow for each query:
 The model and the rule are optional at startup: if the model file is missing
 or cannot be loaded, the server logs a warning and runs without it. Domain
 ages (``ml/domain_age.py``) are looked up in background threads and only used
-by the model; ``HISN_DOMAIN_AGE_LOOKUP=false`` turns the lookups off.
+by the model; ``HISN_DOMAIN_AGE_LOOKUP=false`` turns the lookups off. With
+``HISN_VISUAL_CHECK=true``, suspicious names are queued for the visual worker
+(``ml/visual/worker.py``, a separate program); this server never opens a
+browser itself.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ from config import Settings, settings
 from dns_server.decision import Decision, DecisionEngine, Reason, Verdict
 from dns_server.doh_blocker import DohBlocker
 from dns_server.owner_list import OwnerAllowList
+from dns_server.visual_checks import VisualChecks
 from dns_server.domain import InvalidDomainError, name_from_labels, normalize_domain
 from dns_server.resolver import UpstreamError, UpstreamResolver
 from ml.domain_age import DomainAgeService, RdapClient
@@ -278,6 +282,28 @@ def load_doh_blocker(config: Settings) -> DohBlocker | None:
     return DohBlocker.from_file(config.doh_hosts_path)
 
 
+def load_visual_checks(config: Settings, database: Database | None, has_model: bool) -> VisualChecks | None:
+    """The visual check queue, or None if off (HISN_VISUAL_CHECK=false) or impossible."""
+    if not config.visual_check:
+        return None
+    if database is None or not has_model:
+        # Only names the model finds suspicious are checked.
+        logger.warning("visual check needs the model and the database; it stays off")
+        return None
+    if config.visual_min_score >= config.model_threshold:
+        logger.warning(
+            "HISN_VISUAL_MIN_SCORE (%.2f) is not below HISN_MODEL_THRESHOLD (%.2f): no name will be checked",
+            config.visual_min_score,
+            config.model_threshold,
+        )
+    logger.info(
+        "visual check on for model scores from %.2f to %.2f (start python -m ml.visual.worker)",
+        config.visual_min_score,
+        config.model_threshold,
+    )
+    return VisualChecks(database, config.visual_ttl)
+
+
 def build_engine(
     config: Settings,
     cache: TTLCache[Verdict],
@@ -296,6 +322,8 @@ def build_engine(
         # Ages only feed the model, so without a model there is nothing to look up.
         ages=ages if scorer is not None else None,
         owner_allowed=OwnerAllowList(database) if database is not None else None,
+        visual=load_visual_checks(config, database, scorer is not None),
+        visual_min_score=config.visual_min_score,
     )
 
 

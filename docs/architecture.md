@@ -59,10 +59,27 @@ startup.
 | 4 | Verdict cache | memory, 1 hour, 10,000 names | earlier verdict | - |
 | 5 | Look-alike rule | `ml/lookalike.py` + `data/lists/brands.txt` | block | yes |
 | 6 | Model | `ml/predictor.py` (Random Forest + age table) | block at probability >= 0.90 | yes* |
+| 6b | Visual check (optional) | `visual_checks` table, written by `ml/visual/worker.py` | block if the page looks like an official site, for probabilities from 0.50 to 0.90 | yes* |
 | 7 | Default | - | allow | no |
 
-\* A model verdict made while the domain age is still being looked up is not cached, so the next
-query can use the age.
+\* A model verdict made while the domain age is still being looked up, or while the visual check is
+still pending, is not cached, so the next query can use the result.
+
+### The visual check (Phase 11, optional)
+
+```mermaid
+flowchart LR
+    dns["DNS server<br>model unsure: 0.50 to 0.90"] -- "queue the name" --> table[("visual_checks")]
+    worker["Visual worker<br>normal user"] -- "next name" --> table
+    worker -- "public address only?" --> guard["SSRF guard<br>upstream DNS"]
+    worker -- "sandboxed, every request<br>through the guard" --> browser["Headless Chromium<br>one screenshot"]
+    browser -- "pHash" --> compare["Closest official<br>reference"]
+    worker -- "match / clear / failed" --> table
+    table -- "re-read every 2 s" --> dns
+```
+
+The DNS server (which may run as administrator for port 53) never starts a browser. The worker is a
+separate program that runs as a normal user and talks to the DNS server only through the database.
 
 Lists match on **label boundaries only**: `login.absher.sa` matches `absher.sa`, but
 `absher.sa.fake-login.com` and `fakeabsher.sa` do not. The lists come before the cache, so editing a
@@ -97,13 +114,14 @@ flowchart LR
 
 ## Storage
 
-`storage/schema.sql`, one SQLite file in WAL mode, used by all three programs:
+`storage/schema.sql`, one SQLite file in WAL mode, used by all three programs (four with the visual worker):
 
 | Table | Holds | Kept |
 | --- | --- | --- |
 | `decisions` | time, domain, verdict, reason, client address | `HISN_LOG_RETENTION_DAYS` (30) |
 | daily totals | allowed/blocked counts per day, no domains | until "delete all" |
 | `allowed_domains`, `owner_actions` | sites the owner unblocked, and each unblock/re-block | until removed |
+| `visual_checks` | queued names and visual check results (optional, Phase 11) | 30 days, and "delete all" |
 | `admin_account` | one username and its scrypt password hash | always |
 
 The verdict cache (`storage/cache.py`) and the dashboard sessions are in memory only.
@@ -130,11 +148,13 @@ Known gaps (HTTPS links, IP-based DoH, plain HTTP dashboard on the LAN) are list
 
 | Folder | Contents |
 | --- | --- |
-| `dns_server/` | `server.py` (query flow), `decision.py` (decision order), `domain.py` (validation), `resolver.py` (upstream), `doh_blocker.py`, `owner_list.py` |
+| `dns_server/` | `server.py` (query flow), `decision.py` (decision order), `domain.py` (validation), `resolver.py` (upstream), `doh_blocker.py`, `owner_list.py`, `visual_checks.py` |
 | `storage/` | `schema.sql`, `db.py` (log, stats, account, unblocked sites), `cache.py` |
 | `ml/` | `prepare_data.py`, `fetch_phishstats.py`, `features.py`, `lookalike.py`, `typosquat.py`, `train.py`, `evaluate.py`, `predictor.py`, `domain_age.py`, `fetch_domain_age.py`, `age_table.py` |
+| `ml/visual/` | `ssrf_guard.py`, `capture.py`, `compare.py` (pHash of the page and of its top strip), `reference_hashes.py`, `worker.py`, `evaluate.py` |
 | `web/block_page/` | Flask block page, template, stylesheet, bundled font |
 | `api/` | `app.py` (Flask app, sign-in, setup), `routes.py` (data API), `auth.py` (hashes, sessions, rate limits), `set_password.py` |
 | `web/dashboard/` | `index.html`, `dashboard.js`, `i18n.js` (Arabic/English), `dashboard.css`, bundled Chart.js and fonts |
 | `data/lists/` | `whitelist.txt`, `blacklist.txt`, `brands.txt`, `doh_hosts.txt` |
+| `data/references/` | `references.txt` (official pages for the visual check); screenshots and `hashes.json` stay local |
 | `tests/` | pytest suite, no network access |

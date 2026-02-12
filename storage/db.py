@@ -96,6 +96,12 @@ class OwnerAction:
 
 
 @dataclass(frozen=True)
+class VisualState:
+    status: str  # "pending", "match", "clear" or "failed"
+    brand: str | None
+
+
+@dataclass(frozen=True)
 class DayStats:
     day: str
     allowed: int
@@ -224,6 +230,7 @@ class Database:
             cursor = self._conn.execute("DELETE FROM requests WHERE ts < ?", (cutoff,))
             self._conn.execute("DELETE FROM blocked_domains WHERE last_seen < ?", (cutoff,))
             self._conn.execute("DELETE FROM owner_actions WHERE ts < ?", (cutoff,))
+            self._conn.execute("DELETE FROM visual_checks WHERE requested_at < ?", (cutoff,))
             return cursor.rowcount
 
     def delete_all_logs(self) -> None:
@@ -234,6 +241,7 @@ class Database:
                 self._conn.execute("DELETE FROM blocked_domains")
                 self._conn.execute("DELETE FROM stats")
                 self._conn.execute("DELETE FROM owner_actions")
+                self._conn.execute("DELETE FROM visual_checks")
             self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self._conn.execute("VACUUM")
 
@@ -320,6 +328,63 @@ class Database:
                 "SELECT ts, action, domain FROM owner_actions ORDER BY id DESC LIMIT ?", (_clamp(limit),)
             ).fetchall()
         return [OwnerAction(*row) for row in rows]
+
+    # ----- visual check queue (Phase 11) -----
+
+    def request_visual_check(self, domain: str, ttl: int, ts: float | None = None) -> bool:
+        """Queue ``domain`` unless it is pending or was checked less than ``ttl`` seconds ago.
+
+        Returns True if it was (re)queued.
+        """
+        moment = int(time.time() if ts is None else ts)
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "INSERT INTO visual_checks (domain, status, requested_at) VALUES (?, 'pending', ?) "
+                "ON CONFLICT(domain) DO UPDATE SET status = 'pending', brand = NULL, distance = NULL, "
+                "requested_at = excluded.requested_at, checked_at = NULL "
+                "WHERE visual_checks.status != 'pending' AND visual_checks.checked_at < ?",
+                (domain, moment, moment - int(ttl)),
+            )
+            return cursor.rowcount == 1
+
+    def pending_visual_checks(self, limit: int = 1) -> list[str]:
+        """The oldest queued names first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT domain FROM visual_checks WHERE status = 'pending' ORDER BY requested_at, domain LIMIT ?",
+                (_clamp(limit),),
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    def save_visual_result(
+        self,
+        domain: str,
+        status: str,
+        brand: str | None = None,
+        distance: int | None = None,
+        ts: float | None = None,
+    ) -> None:
+        if status not in ("match", "clear", "failed"):
+            raise ValueError(f"unknown visual status {status!r}")
+        moment = int(time.time() if ts is None else ts)
+        with self._lock, self._conn:
+            # Only a pending row is updated: if the logs were deleted meanwhile,
+            # the name is not written back.
+            self._conn.execute(
+                "UPDATE visual_checks SET status = ?, brand = ?, distance = ?, checked_at = ? "
+                "WHERE domain = ? AND status = 'pending'",
+                (status, brand if status == "match" else None, distance, moment, domain),
+            )
+
+    def visual_states(self, ttl: int, ts: float | None = None) -> dict[str, VisualState]:
+        """Pending names and results younger than ``ttl`` seconds, for the DNS server."""
+        moment = int(time.time() if ts is None else ts)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT domain, status, brand FROM visual_checks WHERE status = 'pending' OR checked_at >= ?",
+                (moment - int(ttl),),
+            ).fetchall()
+        return {domain: VisualState(status, brand) for domain, status, brand in rows}
 
     # ----- reading (block page and dashboard) -----
 

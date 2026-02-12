@@ -27,6 +27,12 @@ data/processed/*
 *.db-journal
 *.log
 
+# Visual check: official screenshots, their hashes and evaluation screenshots are
+# made locally (python -m ml.visual.reference_hashes); only references.txt is committed
+data/references/*
+!data/references/references.txt
+data/visual_eval/
+
 # Trained models are reproducible from train.py
 ml/models/*.joblib
 ml/models/*.pkl

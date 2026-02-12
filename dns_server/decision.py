@@ -13,11 +13,15 @@ Order of checks (the first match wins):
 5. Model: blocked when the probability reaches ``threshold``, else allowed.
    The domain age is passed to the model when it is already known; the age
    lookup itself runs in the background and never delays the answer.
+   Visual check (optional): a name the model allows with a probability of at
+   least ``visual_min_score`` is queued for the visual worker, and blocked
+   once the worker found that its page looks like an official site.
 6. Default: allow (also when the rule or the model is missing or fails).
 
 Only steps 4 and 5 write to the cache, so a list edit always wins over a
-cached verdict. A model verdict made while the age lookup is still running is
-not cached, so the next query for that name is scored with the age.
+cached verdict. A model verdict made while the age lookup or the visual check
+is still running is not cached, so the next query for that name sees the
+result.
 
 A failing rule, model or age lookup never blocks anything: it is logged and
 the name is allowed (or scored without the age), because a broken component
@@ -58,6 +62,7 @@ class Reason(str, Enum):
     LOOKALIKE = "lookalike"
     MODEL = "model"
     DEFAULT = "default"
+    VISUAL = "visual"  # the page looks like an official site (Phase 11)
     OWNER = "owner"  # unblocked by the owner from the dashboard
     DOH = "doh"  # set by the server for DNS-over-HTTPS hosts, not by the engine
 
@@ -89,6 +94,19 @@ class AgeSource(Protocol):
     """
 
     def lookup(self, host: str) -> object: ...
+
+
+class VisualSource(Protocol):
+    """What the engine needs from ``dns_server.visual_checks.VisualChecks``.
+
+    ``state`` returns None (never queued) or an object with ``status``
+    ("pending", "match", "clear", "failed") and ``brand``; ``request`` queues
+    the name and must not block.
+    """
+
+    def state(self, domain: str) -> object | None: ...
+
+    def request(self, domain: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -147,9 +165,13 @@ class DecisionEngine:
         threshold: float = 0.9,
         ages: AgeSource | None = None,
         owner_allowed: OwnerAllowed | None = None,
+        visual: VisualSource | None = None,
+        visual_min_score: float = 0.5,
     ) -> None:
         if not 0.0 <= threshold <= 1.0:
             raise ValueError("threshold must be between 0 and 1")
+        if not 0.0 <= visual_min_score <= 1.0:
+            raise ValueError("visual_min_score must be between 0 and 1")
         self._whitelist = whitelist
         self._blacklist = blacklist
         self._cache = cache
@@ -159,6 +181,8 @@ class DecisionEngine:
         self._threshold = threshold
         self._ages = ages
         self._owner_allowed = owner_allowed
+        self._visual = visual
+        self._visual_min_score = visual_min_score
 
     @classmethod
     def from_files(
@@ -239,8 +263,32 @@ class DecisionEngine:
         except Exception:  # fail open, see the module docstring
             logger.exception("model failed for %s; allowing", domain)
             return None, False
-        verdict = Verdict.BLOCK if probability >= self._threshold else Verdict.ALLOW
-        return Decision(verdict, Reason.MODEL, f"{probability:.2f}"), final
+        if probability >= self._threshold:
+            return Decision(Verdict.BLOCK, Reason.MODEL, f"{probability:.2f}"), final
+        if self._visual is not None and probability >= self._visual_min_score:
+            visual, visual_final = self._visual_decision(domain)
+            if visual is not None:
+                return visual, True
+            final = final and visual_final
+        return Decision(Verdict.ALLOW, Reason.MODEL, f"{probability:.2f}"), final
+
+    def _visual_decision(self, domain: str) -> tuple[Decision | None, bool]:
+        """A block if the page looked like an official site, and whether the answer is final."""
+        assert self._visual is not None
+        try:
+            state = self._visual.state(domain)
+            if state is None:
+                self._visual.request(domain)
+                return None, False
+            status = getattr(state, "status", None)
+            if status == "pending":
+                return None, False
+            if status == "match":
+                return Decision(Verdict.BLOCK, Reason.VISUAL, getattr(state, "brand", None) or None), True
+            return None, True  # "clear" or "failed": the model's verdict stands
+        except Exception:  # fail open: a broken visual check must not block anything
+            logger.exception("visual check failed for %s; using the model's verdict", domain)
+            return None, True
 
     def _age(self, domain: str) -> tuple[float | None, bool]:
         """(age in days or None, whether that answer is final). Never raises."""
