@@ -18,6 +18,12 @@ alrajhi-capital.sa
 alrajhitadawul.com.sa
 alinma.com
 riyadbank.com
+# Saudi National Bank (SNB) with its capital/Tadawul site, and Bank Albilad, confirmed by the
+# project owner on 2026-10-19 (not independently verified). Not in brands.txt: "alahli" and
+# "albilad" are common words that other, unrelated names contain.
+alahli.com
+alahlitadawul.com
+bankalbilad.com.sa
 # Nafath, the national platform and Tawakkalna, confirmed by the project owner on
 # 2026-10-17 (not independently verified). Tawakkalna uses ta.sdaia.gov.sa only, not
 # all of sdaia.gov.sa: an entry here also allows every subdomain under it.
