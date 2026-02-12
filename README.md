@@ -250,20 +250,26 @@ On Linux and macOS `dig @127.0.0.1 -p 5353 absher-sa.com` also works.
 Blocked domains get the block page address (`HISN_BLOCK_PAGE_IP`). Everything else is forwarded to the upstream DNS.
 Edit `data/lists/whitelist.txt` and `data/lists/blacklist.txt`, then restart the server.
 
-### How a name is decided
+### How HISN decides whether to block a site
 
-The first step that gives an answer wins:
+For every name a device asks about, HISN goes through these steps in order. **The first step that
+gives an answer wins**, and the rest are skipped:
 
-1. whitelist (always allow), then the sites the owner unblocked in the dashboard (allow, see Dashboard),
-2. blacklist (always block), 3. verdict cache,
-4. look-alike rule: a name that imitates a brand in `brands.txt` is blocked on its own,
-5. model: blocked if its probability is at least `HISN_MODEL_THRESHOLD` (default 0.90), otherwise allowed.
-   The domain age is one of its inputs when it is already known (Phase 6, below). With the optional
-   visual check on, a name scored from `HISN_VISUAL_MIN_SCORE` (default 0.50) up to the threshold is
-   blocked once its page was found to look like an official site ([Visual check](#visual-check-optional)),
-6. default: allow.
+1. **DoH servers** (`dns.google` and similar): answered "not found" so browsers fall back to HISN's DNS
+   ([DNS-over-HTTPS blocking](#dns-over-https-blocking)).
+2. **Whitelist:** official sites, always allowed.
+3. **Sites the owner unblocked** in the dashboard: allowed.
+4. **Blacklist:** known fraud sites, always blocked.
+5. **Verdict cache:** if HISN already decided about this name in the last hour, reuse that answer.
+6. **Look-alike rule:** a name that imitates a brand in `brands.txt` is blocked on its own.
+7. **Model:** blocked if its probability is at least `HISN_MODEL_THRESHOLD` (default 0.90), otherwise
+   allowed. The domain age is one of its inputs when it is already known ([Domain age](#domain-age)).
+8. **Visual check** (optional, only when it is on): a name the model scored from `HISN_VISUAL_MIN_SCORE`
+   (default 0.50) up to the threshold is blocked once its page was found to look like an official site
+   ([Visual check](#visual-check-optional)).
+9. **Default:** allow.
 
-Only steps 4 and 5 store their verdict in the cache. `HISN_LOOKALIKE_BLOCK` lists the look-alike
+Only the look-alike rule and the model (steps 6 and 7) store their verdict in the cache. `HISN_LOOKALIKE_BLOCK` lists the look-alike
 techniques that block on their own (default `brand_name,hyphenation,homoglyph,typo`; leave it empty to
 turn the rule off). `contains` (the brand inside a longer word) is left to the model by default, because
 a bank's own sister companies look like that.
