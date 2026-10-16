@@ -127,7 +127,7 @@ def edit_distance(a: str, b: str) -> int:
     return previous[-1]
 
 
-def _fuzzy_allowance(brand: str) -> int:
+def fuzzy_allowance(brand: str) -> int:
     """How many edits still count as "the same brand" (longer names tolerate more)."""
     return 1 if len(brand) < 9 else 2
 
@@ -228,7 +228,7 @@ class FeatureExtractor:
                         continue
                     distance = edit_distance(variant, brand)
                     similarity = max(similarity, 1 - distance / max(len(variant), len(brand)))
-                    if distance <= _fuzzy_allowance(brand):
+                    if distance <= fuzzy_allowance(brand):
                         fuzzy = True
         return exact, contained, fuzzy, similarity
 

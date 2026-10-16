@@ -4,7 +4,7 @@ Network-level protection against phishing and fake websites. HISN acts as the DN
 server of a home network: every domain request is checked, and dangerous domains
 are answered with the address of a block page.
 
-> Status: Phase 3 (DNS server with lists, verdict cache and decision log; dataset preparation and domain features for the model). See the project brief for the full roadmap.
+> Status: Phase 4 (DNS server with lists, verdict cache and decision log; dataset, domain features, look-alike handling, model training and evaluation). The model is not used by the server yet (Phase 5). See the project brief for the full roadmap.
 
 ## Setup
 
@@ -112,6 +112,47 @@ government impersonation). It needs no network and takes about 60 microseconds p
 
 Brands in `data/lists/brands.txt` need their official domain in `data/lists/whitelist.txt`, otherwise the real site looks like
 an impersonation. Add them together, and only after checking the domain on the organisation's own pages.
+
+## Train and evaluate the model (Phase 4)
+
+Phishing feeds are mostly random-looking names, so they teach the model nothing about names that
+imitate Saudi brands (`absher-sa.com`, `abhser.com`). Two additions cover that:
+
+- `ml/typosquat.py` generates look-alikes of every brand in `brands.txt` (missing letter, swapped
+  letters, look-alike letters and digits including punycode, hyphens, brand plus a word, another
+  suffix). Training adds them as malicious examples, except for the brands held out for evaluation.
+- `ml/lookalike.py` is a fixed rule that flags a name that looks like a brand but is not on its
+  official domain. It needs no training. The server will use it from Phase 5.
+
+Train (needs `data/processed/dataset.csv` from Phase 3):
+
+```bash
+python -m ml.train
+```
+
+It writes `ml/models/hisn_rf.joblib` (never committed). Only load model files you trained yourself.
+
+Evaluate:
+
+```bash
+python -m ml.evaluate
+```
+
+It prints three separate results: precision, recall and the confusion matrix on the newest phishing
+names (the temporal test split), the model's recall on look-alikes of held-out brands, by brand and
+by technique, and the rule's recall plus how many benign test names it wrongly flags. Accuracy is not
+shown: with about 1 malicious name per 43 benign ones it says nothing. `--threshold 0.6` tries another
+blocking threshold (default `HISN_MODEL_THRESHOLD`).
+
+To also test a trick the model never saw, hold a technique out of training:
+
+```bash
+python -m ml.train --holdout-technique transposition
+```
+
+**Every number depends on labels nobody reviewed and on generated look-alikes.** Read
+[docs/limitations.md](docs/limitations.md) before quoting one. A larger brand list is proposed in
+[docs/brand_list_proposal.md](docs/brand_list_proposal.md); its domains must be confirmed first.
 
 ## Run the tests
 

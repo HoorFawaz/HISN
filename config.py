@@ -104,6 +104,7 @@ class Settings:
 
     # Model decision threshold: probability above which a domain is blocked.
     model_threshold: float
+    model_path: Path  # trained model bundle written by ml/train.py
 
     # Storage
     db_path: Path
@@ -146,6 +147,7 @@ def load_settings() -> Settings:
         allowed_networks=_env_networks("HISN_ALLOWED_NETWORKS", _DEFAULT_ALLOWED_NETWORKS),
         block_page_ip=_env_ip("HISN_BLOCK_PAGE_IP", "127.0.0.1"),
         model_threshold=_env_float("HISN_MODEL_THRESHOLD", 0.80, minimum=0.0, maximum=1.0),
+        model_path=_env_path("HISN_MODEL_PATH", "ml/models/hisn_rf.joblib"),
         db_path=_env_path("HISN_DB_PATH", "data/hisn.db"),
         log_retention_days=_env_int("HISN_LOG_RETENTION_DAYS", 30, minimum=1, maximum=365),
         verdict_cache_ttl=_env_int("HISN_VERDICT_CACHE_TTL", 3600, minimum=1, maximum=86400),
